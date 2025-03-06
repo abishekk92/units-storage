@@ -16,6 +16,7 @@ sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite"], optional = tru
 rocksdb = { version = "0.23.0", optional = true }
 chrono = { version = "0.4.31", features = ["clock"] }
 tokio = { version = "1", features = ["full"], optional = true }
+blake3 = "1.6.1"
 
 [dev-dependencies]
 tempfile = "3.8"
