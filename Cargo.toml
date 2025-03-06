@@ -2,6 +2,12 @@
 name = "units-storage"
 version = "0.1.0"
 edition = "2021"
+description = "Storage implementations for Universal Information Tokenization System (UNITS)"
+license = "MIT"
+repository = "https://github.com/abisshekk92/units-storage"
+readme = "README.md"
+keywords = ["storage", "database", "units", "tokenization"]
+categories = ["database-implementations", "cryptography"]
 
 [dependencies]
 curve25519-dalek = "4.1.3"
