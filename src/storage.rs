@@ -29,7 +29,7 @@ pub trait UnitsStorage: UnitsStorageProofEngine {
     fn set(&self, object: &TokenizedObject) -> Result<(), String>;
     
     /// Create an iterator to scan through all objects
-    fn scan(&self) -> Box<dyn UnitsStorageIterator>;
+    fn scan(&self) -> Box<dyn UnitsStorageIterator + '_>;
     
     /// Delete an object by its ID
     fn delete(&self, id: &UnitsObjectId) -> Result<(), String>;

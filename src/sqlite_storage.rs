@@ -241,7 +241,7 @@ impl UnitsStorage for SqliteStorage {
         })
     }
 
-    fn scan(&self) -> Box<dyn UnitsStorageIterator> {
+    fn scan(&self) -> Box<dyn UnitsStorageIterator + '_> {
         // Return an iterator that will scan through all objects
         Box::new(SqliteStorageIterator {
             pool: self.pool.clone(),
