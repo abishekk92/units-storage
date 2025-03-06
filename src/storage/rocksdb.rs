@@ -2,7 +2,7 @@
 use crate::{
     id::UnitsObjectId,
     objects::TokenizedObject,
-    proofs::{StateProof, TokenizedObjectProof},
+    proofs::{LatticeProofEngine, ProofEngine, StateProof, TokenizedObjectProof},
     storage_traits::{UnitsStorage, UnitsStorageIterator, UnitsStorageProofEngine},
 };
 #[cfg(feature = "rocksdb")]
@@ -29,6 +29,7 @@ const CF_STATE_PROOFS: &str = "state_proofs";
 pub struct RocksDbStorage {
     db: Arc<DB>,
     db_path: PathBuf,
+    proof_engine: LatticeProofEngine,
 }
 
 #[cfg(feature = "rocksdb")]
@@ -71,6 +72,7 @@ impl RocksDbStorage {
         Ok(Self {
             db: Arc::new(db),
             db_path,
+            proof_engine: LatticeProofEngine::new(),
         })
     }
 }
@@ -94,15 +96,27 @@ impl UnitsStorageIterator for RocksDbStorageIterator {
 #[cfg(feature = "rocksdb")]
 impl UnitsStorage for RocksDbStorage {
     fn get(&self, _id: &UnitsObjectId) -> Option<TokenizedObject> {
-        None // Simplified implementation
+        None // Simplified implementation for now
     }
 
-    fn set(&self, _object: &TokenizedObject) -> Result<(), String> {
-        Ok(()) // Simplified implementation
+    fn set(&self, object: &TokenizedObject) -> Result<(), String> {
+        // In a complete implementation, this would:
+        // 1. Store the object in the CF_OBJECTS column family
+        // 2. Generate a proof using the proof engine
+        // 3. Store the proof in the CF_OBJECT_PROOFS column family
+        
+        // For this simplified version, we'll just generate a proof but not store it
+        let _proof = self.proof_engine.generate_object_proof(object);
+        
+        Ok(())
     }
 
     fn delete(&self, _id: &UnitsObjectId) -> Result<(), String> {
-        Ok(()) // Simplified implementation
+        // In a complete implementation, this would:
+        // 1. Delete the object from the CF_OBJECTS column family
+        // 2. Delete the proof from the CF_OBJECT_PROOFS column family
+        
+        Ok(())
     }
 
     fn scan(&self) -> Box<dyn UnitsStorageIterator + '_> {
@@ -115,16 +129,38 @@ impl UnitsStorage for RocksDbStorage {
 
 #[cfg(feature = "rocksdb")]
 impl UnitsStorageProofEngine for RocksDbStorage {
+    fn proof_engine(&self) -> &dyn ProofEngine {
+        &self.proof_engine
+    }
+    
     fn generate_state_proof(&self) -> StateProof {
+        // In a complete implementation, this would:
+        // 1. Retrieve all object proofs from the CF_OBJECT_PROOFS column family
+        // 2. Use the proof engine to generate a state proof
+        // 3. Store the state proof in the CF_STATE_PROOFS column family
+        
+        // For this simplified version, just return an empty proof
         StateProof { proof: Vec::new() }
     }
 
     fn get_proof(&self, _id: &UnitsObjectId) -> Option<TokenizedObjectProof> {
+        // In a complete implementation, this would:
+        // 1. Look up the proof in the CF_OBJECT_PROOFS column family
+        // 2. If not found, retrieve the object and generate a new proof
+        
         None
     }
 
-    fn verify_proof(&self, _id: &UnitsObjectId, _proof: &TokenizedObjectProof) -> bool {
-        true
+    fn verify_proof(&self, id: &UnitsObjectId, proof: &TokenizedObjectProof) -> bool {
+        // In a complete implementation, this would:
+        // 1. Retrieve the object
+        // 2. Use the proof engine to verify the proof
+        
+        if let Some(object) = self.get(id) {
+            self.proof_engine.verify_object_proof(&object, proof)
+        } else {
+            false
+        }
     }
 }
 

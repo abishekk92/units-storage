@@ -1,6 +1,6 @@
 use crate::id::UnitsObjectId;
 use crate::objects::TokenizedObject;
-use crate::proofs::{StateProof, TokenizedObjectProof};
+use crate::proofs::{ProofEngine, StateProof, TokenizedObjectProof};
 
 /// Iterator for traversing objects in storage
 pub trait UnitsStorageIterator {
@@ -10,6 +10,9 @@ pub trait UnitsStorageIterator {
 
 /// Engine for creating and verifying proofs
 pub trait UnitsStorageProofEngine {
+    /// Get the proof engine used by this storage
+    fn proof_engine(&self) -> &dyn ProofEngine;
+    
     /// Generate a state proof representing the current state of all objects
     fn generate_state_proof(&self) -> StateProof;
     

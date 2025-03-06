@@ -1,7 +1,7 @@
 use crate::id::UnitsObjectId;
 
 // UnitsObject is a container for objects in UNITS.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TokenizedObject {
     pub data: Vec<u8>,
     pub id: UnitsObjectId,
