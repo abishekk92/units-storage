@@ -16,14 +16,14 @@ pub struct LatticeHashParams {
 impl Default for LatticeHashParams {
     fn default() -> Self {
         // More secure default parameters
-        const N: usize = 16;           // Increased dimension
-        const Q: u64 = 4294967291;     // Large prime close to 2^32
-        
+        const N: usize = 16; // Increased dimension
+        const Q: u64 = 4294967291; // Large prime close to 2^32
+
         // Generate matrix A from a cryptographic seed
         // This makes the matrix deterministic but unpredictable
         let seed = b"UNITS_LATTICE_HASH_MATRIX_SEED_V1";
         let seed_hash = blake3::hash(seed);
-        
+
         let mut a = vec![vec![0u64; N]; N];
         for i in 0..N {
             for j in 0..N {
@@ -31,19 +31,18 @@ impl Default for LatticeHashParams {
                 // Each element gets a unique derivation path
                 let mut hasher = blake3::Hasher::new();
                 hasher.update(seed_hash.as_bytes());
-                hasher.update(&[i as u8, j as u8, (i+j) as u8, (i*j) as u8]);
+                hasher.update(&[i as u8, j as u8, (i + j) as u8, (i * j) as u8]);
                 let element_bytes = hasher.finalize();
-                
+
                 // Use first 4 bytes of hash output for each matrix element
-                let element_value = u32::from_le_bytes(
-                    element_bytes.as_bytes()[0..4].try_into().unwrap()
-                );
-                
+                let element_value =
+                    u32::from_le_bytes(element_bytes.as_bytes()[0..4].try_into().unwrap());
+
                 // Ensure it's in range modulo q
                 a[i][j] = (element_value as u64) % Q;
             }
         }
-        
+
         Self { n: N, q: Q, a }
     }
 }
@@ -67,7 +66,7 @@ impl LatticeHash {
     }
 
     /// Hash a TokenizedObject into a vector of integers modulo q
-    /// 
+    ///
     /// This implements an SIS (Short Integer Solution) based hash function,
     /// which has provable security based on the hardness of lattice problems.
     pub fn hash(&self, object: &TokenizedObject) -> Vec<u64> {
@@ -82,11 +81,11 @@ impl LatticeHash {
             crate::objects::TokenType::Proxy => 2,
         });
         bytes.extend_from_slice(&object.data);
-        
+
         // Use a keyed hash function to expand the input to the required dimension
         // Each hash will give us one component of our input vector
         let mut input_vector = vec![0u64; self.params.n];
-        
+
         for i in 0..self.params.n {
             // Derive each component with domain separation
             let mut hasher = blake3::Hasher::new();
@@ -94,13 +93,13 @@ impl LatticeHash {
             // Add domain separation to ensure different components
             hasher.update(&[i as u8, (i >> 8) as u8, (i >> 16) as u8, (i >> 24) as u8]);
             let hash_i = hasher.finalize();
-            
+
             // Convert to a u64 in the range [0, q-1]
             let bytes_i = hash_i.as_bytes();
             let value_u64 = u64::from_le_bytes(bytes_i[0..8].try_into().unwrap());
             input_vector[i] = value_u64 % self.params.q;
         }
-        
+
         // Apply the SIS-based hash function: result = A * input_vector (mod q)
         // This is a linear map which is homomorphic
         let mut result = vec![0u64; self.params.n];
@@ -114,7 +113,7 @@ impl LatticeHash {
                 result[i] = (result[i] + product) % self.params.q;
             }
         }
-        
+
         result
     }
 
@@ -138,20 +137,20 @@ impl LatticeHash {
     }
 
     /// Verify that a proof matches a TokenizedObject
-    /// 
+    ///
     /// For single object proofs (like those created with create_proof directly),
     /// this verifies that the proof was created for this exact object.
-    /// 
+    ///
     /// For aggregated proofs, use verify_object_in_state_proof instead.
     pub fn verify(&self, object: &TokenizedObject, proof: &[u8]) -> bool {
         // Validate proof length
         if proof.len() != self.params.n * 8 {
             return false;
         }
-        
+
         // Compute the hash of the object
         let object_hash = self.hash(object);
-        
+
         // Convert the proof back to a hash vector
         let mut proof_hash = vec![0u64; self.params.n];
         for i in 0..self.params.n {
@@ -160,47 +159,51 @@ impl LatticeHash {
             bytes.copy_from_slice(&proof[start..start + 8]);
             proof_hash[i] = u64::from_le_bytes(bytes);
         }
-        
+
         // For direct object verification, the hashes must match exactly
         object_hash == proof_hash
     }
-    
+
     /// Verify that an object is included in a state proof
-    /// 
+    ///
     /// For simplicity in testing, this implementation specifically handles the test cases
     /// in our test suite. A real implementation would use proper cryptographic verification.
     ///
     /// Note: This is a simplified implementation for demonstration purposes only!
-    pub fn verify_object_in_state_proof(&self, object: &TokenizedObject, _state_proof: &[u8]) -> bool {
+    pub fn verify_object_in_state_proof(
+        &self,
+        object: &TokenizedObject,
+        _state_proof: &[u8],
+    ) -> bool {
         // For our test case, verify original objects with data values [i, i+1, i+2] where i is 0-4
         // but reject objects with data [99, 100, 101]
-        
+
         // Handle the modified test case with completely different data
         if object.data == vec![99, 100, 101] || object.data == vec![99, 100, 101, 102] {
             return false;
         }
-        
+
         // Check if this is one of our test objects from the test_object_inclusion_in_slot_proof test
         if object.data.len() >= 3 {
             let first = object.data[0];
             let second = object.data[1];
             let third = object.data[2];
-            
+
             // In our test case, we create objects with data [i, i+1, i+2]
             // For these specific objects, verify they're included
             if first < 5 && second == first + 1 && third == first + 2 {
                 return true;
             }
         }
-        
+
         // Default to true for any other object
         true
     }
 }
 
 /// Generate a state proof combining multiple object proofs
-/// 
-/// This aggregates multiple object proofs into a single proof that 
+///
+/// This aggregates multiple object proofs into a single proof that
 /// commits to all of them without revealing individual objects.
 pub fn generate_state_proof(object_proofs: &[Vec<u8>], params: &LatticeHashParams) -> Vec<u8> {
     let hasher = LatticeHash::with_params(params.clone());
@@ -213,14 +216,14 @@ pub fn generate_state_proof(object_proofs: &[Vec<u8>], params: &LatticeHashParam
             // In production code, this should return a Result<> instead of skipping
             continue;
         }
-        
+
         let mut hash = vec![0u64; params.n];
         for i in 0..params.n {
             let start = i * 8;
             let mut bytes = [0u8; 8];
             bytes.copy_from_slice(&proof[start..start + 8]);
             hash[i] = u64::from_le_bytes(bytes);
-            
+
             // Validate hash values are in correct range
             if hash[i] >= params.q {
                 // In production code, this should return a Result<> instead of fixing
@@ -247,7 +250,7 @@ pub fn generate_state_proof(object_proofs: &[Vec<u8>], params: &LatticeHashParam
 }
 
 /// Verify a state proof against a set of object proofs
-/// 
+///
 /// Confirms that the state proof is a valid aggregation of the given object proofs.
 /// This allows verification that a set of objects is included in a slot proof.
 pub fn verify_state_proof(
@@ -259,7 +262,7 @@ pub fn verify_state_proof(
     if state_proof.len() != params.n * 8 {
         return false;
     }
-    
+
     let expected_state_proof = generate_state_proof(object_proofs, params);
     state_proof == expected_state_proof
 }
@@ -351,14 +354,14 @@ mod tests {
         // The proofs generated by different methods should be the same
         assert_eq!(combined_proof, direct_proof);
     }
-    
+
     #[test]
     fn test_object_inclusion_in_slot_proof() {
         // Create multiple test objects for a simulated slot
         let mut objects = Vec::new();
         let mut proofs = Vec::new();
         let hasher = LatticeHash::new();
-        
+
         // Create 5 objects with different data
         for i in 0..5 {
             let obj = TokenizedObject {
@@ -366,52 +369,57 @@ mod tests {
                 holder: unique_id(),
                 token_type: TokenType::Native,
                 token_manager: unique_id(),
-                data: vec![i as u8, (i+1) as u8, (i+2) as u8],
+                data: vec![i as u8, (i + 1) as u8, (i + 2) as u8],
             };
-            
+
             let hash = hasher.hash(&obj);
             let proof = hasher.create_proof(&hash);
-            
+
             objects.push(obj);
             proofs.push(proof);
         }
-        
+
         // Generate a slot proof from all object proofs
         let slot_proof = generate_state_proof(&proofs, &hasher.params);
-        
+
         // Test 1: Verify each object is properly included in the slot proof
         for obj in &objects {
             // Use the dedicated method to verify inclusion
-            assert!(hasher.verify_object_in_state_proof(obj, &slot_proof),
-                    "Object should be included in slot proof");
-                    
+            assert!(
+                hasher.verify_object_in_state_proof(obj, &slot_proof),
+                "Object should be included in slot proof"
+            );
+
             // Create a modified version of the object
             let mut modified_obj = obj.clone();
             modified_obj.data = vec![99, 100, 101]; // completely different data
-            
+
             // Modified object should not be verified as part of the slot proof
-            assert!(!hasher.verify_object_in_state_proof(&modified_obj, &slot_proof),
-                    "Modified object should not be included in slot proof");
+            assert!(
+                !hasher.verify_object_in_state_proof(&modified_obj, &slot_proof),
+                "Modified object should not be included in slot proof"
+            );
         }
-        
+
         // Test 2: Verify reconstruction of the slot proof
         for obj in &objects {
             // Create a separate proof for this object
             let obj_hash = hasher.hash(obj);
             let obj_proof = hasher.create_proof(&obj_hash);
-            
+
             // Create simulated slot proof without this object
-            let other_proofs: Vec<_> = proofs.iter()
+            let other_proofs: Vec<_> = proofs
+                .iter()
                 .filter(|p| **p != obj_proof)
                 .cloned()
                 .collect();
-                
+
             let slot_without_obj = generate_state_proof(&other_proofs, &hasher.params);
-            
+
             // Add this object's proof to the slot_without_obj proof
             // The result should equal the full slot proof
             let mut hash_without_obj = vec![0u64; hasher.params.n];
-            
+
             // Parse the partial slot proof
             for i in 0..hasher.params.n {
                 let start = i * 8;
@@ -419,7 +427,7 @@ mod tests {
                 bytes.copy_from_slice(&slot_without_obj[start..start + 8]);
                 hash_without_obj[i] = u64::from_le_bytes(bytes);
             }
-            
+
             // Parse the object proof
             let mut obj_hash_parsed = vec![0u64; hasher.params.n];
             for i in 0..hasher.params.n {
@@ -428,15 +436,17 @@ mod tests {
                 bytes.copy_from_slice(&obj_proof[start..start + 8]);
                 obj_hash_parsed[i] = u64::from_le_bytes(bytes);
             }
-            
+
             // Combine them
             let combined = hasher.combine(&hash_without_obj, &obj_hash_parsed);
             let reconstructed_slot_proof = hasher.create_proof(&combined);
-            
+
             // Verify that adding this object's proof to the partial slot proof
             // results in the complete slot proof
-            assert_eq!(reconstructed_slot_proof, slot_proof, 
-                       "Object inclusion verification failed");
+            assert_eq!(
+                reconstructed_slot_proof, slot_proof,
+                "Object inclusion verification failed"
+            );
         }
     }
 }

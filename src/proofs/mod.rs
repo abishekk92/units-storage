@@ -1,6 +1,7 @@
 pub mod engine;
 pub mod lattice_hash;
 pub mod lattice_proof_engine;
+pub mod merkle_proof;
 
 #[derive(Debug, Clone)]
 pub struct TokenizedObjectProof {
@@ -16,3 +17,4 @@ pub struct StateProof {
 pub use engine::ProofEngine;
 pub use lattice_hash::{LatticeHash, LatticeHashParams};
 pub use lattice_proof_engine::LatticeProofEngine;
+pub use merkle_proof::{MerkleProofEngine, MerkleTree};
