@@ -69,8 +69,38 @@ impl UnitsObjectId {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Generate a unique UnitsObjectId for testing purposes
+    pub fn unique_id() -> UnitsObjectId {
+        // Use current timestamp as basis for uniqueness
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_nanos()
+            .to_le_bytes();
+            
+        let ts_slice = timestamp.as_slice();
+        let extra = [1, 2, 3, 4];
+        
+        let (id, _) = UnitsObjectId::find_uid(&[ts_slice, &extra]);
+        id
+    }
+    
+    #[test]
+    fn test_unique_id() {
+        let id1 = unique_id();
+        let id2 = unique_id();
+        
+        // Two consecutive calls should produce different IDs
+        assert_ne!(id1, id2);
+        
+        // Unique IDs should not be default
+        assert_ne!(id1, UnitsObjectId::default());
+        assert_ne!(id2, UnitsObjectId::default());
+    }
 
     #[test]
     fn test_default_id() {
