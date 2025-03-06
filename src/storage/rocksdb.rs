@@ -3,7 +3,7 @@ use crate::{
     id::UnitsObjectId,
     objects::TokenizedObject,
     proofs::{StateProof, TokenizedObjectProof},
-    storage::{UnitsStorage, UnitsStorageIterator, UnitsStorageProofEngine},
+    storage_traits::{UnitsStorage, UnitsStorageIterator, UnitsStorageProofEngine},
 };
 #[cfg(feature = "rocksdb")]
 use rocksdb::{

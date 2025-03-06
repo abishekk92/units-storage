@@ -2,7 +2,7 @@ use crate::{
     id::UnitsObjectId,
     objects::{TokenType, TokenizedObject},
     proofs::{StateProof, TokenizedObjectProof},
-    storage::{UnitsStorage, UnitsStorageIterator, UnitsStorageProofEngine},
+    storage_traits::{UnitsStorage, UnitsStorageIterator, UnitsStorageProofEngine},
 };
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions},
