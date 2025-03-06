@@ -81,49 +81,135 @@ impl RocksDbStorage {
 /// Iterator implementation for RocksDB storage
 pub struct RocksDbStorageIterator {
     db: Arc<DB>,
-    current_index: usize,
+    iterator: Option<rocksdb::DBIterator<'static>>,
+}
+
+#[cfg(feature = "rocksdb")]
+impl RocksDbStorageIterator {
+    fn new(db: Arc<DB>) -> Self {
+        let cf_objects = db.cf_handle(CF_OBJECTS);
+        let iterator = cf_objects.map(|cf| {
+            // We're using unsafe here because RocksDB requires a static lifetime for the iterator
+            // but we know the DB will outlive the iterator due to the Arc
+            unsafe {
+                let db_ptr: *const DB = Arc::as_ptr(&db);
+                let db_ref: &'static DB = &*db_ptr;
+                db_ref.iterator_cf(&cf)
+                    .from_len(0)
+                    .expect("Failed to create iterator")
+            }
+        });
+        
+        Self {
+            db,
+            iterator,
+        }
+    }
 }
 
 #[cfg(feature = "rocksdb")]
 impl UnitsStorageIterator for RocksDbStorageIterator {
     fn next(&mut self) -> Option<TokenizedObject> {
-        // In a real implementation, this would iterate through the objects in the database
-        // For this simplified version, just return None
-        None
+        let iterator = self.iterator.as_mut()?;
+        
+        if let Some(result) = iterator.next() {
+            match result {
+                Ok((_, value)) => {
+                    // Deserialize the object
+                    match bincode::deserialize(&value) {
+                        Ok(obj) => Some(obj),
+                        Err(_) => self.next(), // Skip invalid objects
+                    }
+                },
+                Err(_) => self.next(), // Skip errors
+            }
+        } else {
+            None
+        }
     }
 }
 
 #[cfg(feature = "rocksdb")]
 impl UnitsStorage for RocksDbStorage {
-    fn get(&self, _id: &UnitsObjectId) -> Option<TokenizedObject> {
-        None // Simplified implementation for now
+    fn get(&self, id: &UnitsObjectId) -> Option<TokenizedObject> {
+        let cf_objects = match self.db.cf_handle(CF_OBJECTS) {
+            Some(cf) => cf,
+            None => return None,
+        };
+
+        let result = match self.db.get_cf(&cf_objects, id.as_ref()) {
+            Ok(Some(value)) => value,
+            _ => return None,
+        };
+
+        // Deserialize the object
+        match bincode::deserialize(&result) {
+            Ok(obj) => Some(obj),
+            Err(_) => None,
+        }
     }
 
     fn set(&self, object: &TokenizedObject) -> Result<(), String> {
-        // In a complete implementation, this would:
-        // 1. Store the object in the CF_OBJECTS column family
-        // 2. Generate a proof using the proof engine
-        // 3. Store the proof in the CF_OBJECT_PROOFS column family
-        
-        // For this simplified version, we'll just generate a proof but not store it
-        let _proof = self.proof_engine.generate_object_proof(object);
-        
+        let cf_objects = match self.db.cf_handle(CF_OBJECTS) {
+            Some(cf) => cf,
+            None => return Err("Objects column family not found".to_string()),
+        };
+
+        let cf_object_proofs = match self.db.cf_handle(CF_OBJECT_PROOFS) {
+            Some(cf) => cf,
+            None => return Err("Object proofs column family not found".to_string()),
+        };
+
+        // Serialize the object
+        let serialized_object = match bincode::serialize(object) {
+            Ok(data) => data,
+            Err(e) => return Err(format!("Failed to serialize object: {}", e)),
+        };
+
+        // Generate proof for the object
+        let proof = self.proof_engine.generate_object_proof(object);
+        let serialized_proof = match bincode::serialize(&proof) {
+            Ok(data) => data,
+            Err(e) => return Err(format!("Failed to serialize proof: {}", e)),
+        };
+
+        // Store the object and its proof
+        if let Err(e) = self.db.put_cf(&cf_objects, object.id.as_ref(), &serialized_object) {
+            return Err(format!("Failed to store object: {}", e));
+        }
+
+        if let Err(e) = self.db.put_cf(&cf_object_proofs, object.id.as_ref(), &serialized_proof) {
+            return Err(format!("Failed to store object proof: {}", e));
+        }
+
         Ok(())
     }
 
-    fn delete(&self, _id: &UnitsObjectId) -> Result<(), String> {
-        // In a complete implementation, this would:
-        // 1. Delete the object from the CF_OBJECTS column family
-        // 2. Delete the proof from the CF_OBJECT_PROOFS column family
-        
+    fn delete(&self, id: &UnitsObjectId) -> Result<(), String> {
+        let cf_objects = match self.db.cf_handle(CF_OBJECTS) {
+            Some(cf) => cf,
+            None => return Err("Objects column family not found".to_string()),
+        };
+
+        let cf_object_proofs = match self.db.cf_handle(CF_OBJECT_PROOFS) {
+            Some(cf) => cf,
+            None => return Err("Object proofs column family not found".to_string()),
+        };
+
+        // Delete the object and its proof
+        if let Err(e) = self.db.delete_cf(&cf_objects, id.as_ref()) {
+            return Err(format!("Failed to delete object: {}", e));
+        }
+
+        if let Err(e) = self.db.delete_cf(&cf_object_proofs, id.as_ref()) {
+            return Err(format!("Failed to delete object proof: {}", e));
+        }
+
         Ok(())
     }
 
     fn scan(&self) -> Box<dyn UnitsStorageIterator + '_> {
-        Box::new(RocksDbStorageIterator {
-            db: self.db.clone(),
-            current_index: 0,
-        })
+        Box::new(RocksDbStorageIterator::new(self.db.clone()))
     }
 }
 
@@ -134,28 +220,97 @@ impl UnitsStorageProofEngine for RocksDbStorage {
     }
     
     fn generate_state_proof(&self) -> StateProof {
-        // In a complete implementation, this would:
-        // 1. Retrieve all object proofs from the CF_OBJECT_PROOFS column family
-        // 2. Use the proof engine to generate a state proof
-        // 3. Store the state proof in the CF_STATE_PROOFS column family
+        let cf_object_proofs = match self.db.cf_handle(CF_OBJECT_PROOFS) {
+            Some(cf) => cf,
+            None => return StateProof { proof: Vec::new() },
+        };
         
-        // For this simplified version, just return an empty proof
-        StateProof { proof: Vec::new() }
+        let cf_state_proofs = match self.db.cf_handle(CF_STATE_PROOFS) {
+            Some(cf) => cf,
+            None => return StateProof { proof: Vec::new() },
+        };
+        
+        // Collect all object proofs
+        let mut object_proofs = Vec::new();
+        
+        // Create an iterator for the proofs
+        let iter_result = unsafe {
+            let db_ptr: *const DB = Arc::as_ptr(&self.db);
+            let db_ref: &'static DB = &*db_ptr;
+            db_ref.iterator_cf(&cf_object_proofs).from_len(0)
+        };
+        
+        let mut iter = match iter_result {
+            Ok(iter) => iter,
+            Err(_) => return StateProof { proof: Vec::new() },
+        };
+        
+        // Collect all proofs
+        while let Some(Ok((key, value))) = iter.next() {
+            // Parse the key as UnitsObjectId
+            if key.len() != 32 {
+                continue;
+            }
+            
+            let mut id_bytes = [0u8; 32];
+            id_bytes.copy_from_slice(&key);
+            let id = UnitsObjectId::new(id_bytes);
+            
+            // Deserialize the proof
+            if let Ok(proof) = bincode::deserialize::<TokenizedObjectProof>(&value) {
+                object_proofs.push((id, proof));
+            }
+        }
+        
+        // Generate the state proof
+        let state_proof = self.proof_engine.generate_state_proof(&object_proofs);
+        
+        // Store the state proof in the database
+        if let Ok(serialized_proof) = bincode::serialize(&state_proof) {
+            // Use a timestamp as the key for the state proof
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+                .to_le_bytes();
+                
+            // Store the state proof
+            let _ = self.db.put_cf(&cf_state_proofs, &timestamp, &serialized_proof);
+        }
+        
+        state_proof
     }
 
-    fn get_proof(&self, _id: &UnitsObjectId) -> Option<TokenizedObjectProof> {
-        // In a complete implementation, this would:
-        // 1. Look up the proof in the CF_OBJECT_PROOFS column family
-        // 2. If not found, retrieve the object and generate a new proof
+    fn get_proof(&self, id: &UnitsObjectId) -> Option<TokenizedObjectProof> {
+        let cf_object_proofs = self.db.cf_handle(CF_OBJECT_PROOFS)?;
         
-        None
+        // Get the proof from the database
+        let result = match self.db.get_cf(&cf_object_proofs, id.as_ref()) {
+            Ok(Some(value)) => value,
+            _ => {
+                // If the proof is not found, try to generate it from the object
+                if let Some(object) = self.get(id) {
+                    let proof = self.proof_engine.generate_object_proof(&object);
+                    
+                    // Store the proof for future use
+                    if let Ok(serialized_proof) = bincode::serialize(&proof) {
+                        let _ = self.db.put_cf(&cf_object_proofs, id.as_ref(), &serialized_proof);
+                    }
+                    
+                    return Some(proof);
+                }
+                return None;
+            },
+        };
+
+        // Deserialize the proof
+        match bincode::deserialize(&result) {
+            Ok(proof) => Some(proof),
+            Err(_) => None,
+        }
     }
 
     fn verify_proof(&self, id: &UnitsObjectId, proof: &TokenizedObjectProof) -> bool {
-        // In a complete implementation, this would:
-        // 1. Retrieve the object
-        // 2. Use the proof engine to verify the proof
-        
         if let Some(object) = self.get(id) {
             self.proof_engine.verify_object_proof(&object, proof)
         } else {
@@ -177,6 +332,7 @@ impl Debug for RocksDbStorage {
 mod tests {
     use super::*;
     use crate::id::tests::unique_id;
+    use crate::objects::TokenType;
     use tempfile::tempdir;
 
     #[test]
@@ -195,20 +351,30 @@ mod tests {
         let obj = TokenizedObject {
             id,
             holder,
-            token_type: crate::objects::TokenType::Native,
+            token_type: TokenType::Native,
             token_manager,
             data: vec![1, 2, 3, 4],
         };
 
         // Test set and get
         storage.set(&obj).unwrap();
-        let _retrieved = storage.get(&id);
+        let retrieved = storage.get(&id);
         
-        // Since our implementation is simplified and returns None,
-        // we'll just check that it doesn't panic rather than asserting values
+        // Verify the retrieved object is the same as the one we set
+        assert!(retrieved.is_some());
+        let retrieved = retrieved.unwrap();
+        assert_eq!(retrieved.id, obj.id);
+        assert_eq!(retrieved.holder, obj.holder);
+        assert_eq!(retrieved.token_type, obj.token_type);
+        assert_eq!(retrieved.token_manager, obj.token_manager);
+        assert_eq!(retrieved.data, obj.data);
         
         // Test delete
         storage.delete(&id).unwrap();
+        
+        // Verify the object is deleted
+        let deleted = storage.get(&id);
+        assert!(deleted.is_none());
     }
 
     #[test]
@@ -219,11 +385,94 @@ mod tests {
 
         // Create storage
         let storage = RocksDbStorage::new(&db_path).unwrap();
-
-        // Generate a state proof
-        let proof = storage.generate_state_proof();
         
-        // For our simplified implementation, this will be an empty vector
-        assert_eq!(proof.proof.len(), 0);
+        // Create test objects
+        let obj1 = TokenizedObject {
+            id: unique_id(),
+            holder: unique_id(),
+            token_type: TokenType::Native,
+            token_manager: unique_id(),
+            data: vec![1, 2, 3, 4],
+        };
+        
+        let obj2 = TokenizedObject {
+            id: unique_id(),
+            holder: unique_id(),
+            token_type: TokenType::Custodial,
+            token_manager: unique_id(),
+            data: vec![5, 6, 7, 8],
+        };
+        
+        // Store the objects
+        storage.set(&obj1).unwrap();
+        storage.set(&obj2).unwrap();
+        
+        // Get proofs for the objects
+        let proof1 = storage.get_proof(&obj1.id);
+        let proof2 = storage.get_proof(&obj2.id);
+        
+        assert!(proof1.is_some());
+        assert!(proof2.is_some());
+        
+        let proof1 = proof1.unwrap();
+        let proof2 = proof2.unwrap();
+        
+        // Verify the proofs
+        assert!(storage.verify_proof(&obj1.id, &proof1));
+        assert!(storage.verify_proof(&obj2.id, &proof2));
+        
+        // Verify cross-proofs fail
+        assert!(!storage.verify_proof(&obj1.id, &proof2));
+        assert!(!storage.verify_proof(&obj2.id, &proof1));
+        
+        // Generate a state proof
+        let state_proof = storage.generate_state_proof();
+        
+        // We should have a non-empty proof now
+        assert!(!state_proof.proof.is_empty());
+    }
+    
+    #[test]
+    fn test_storage_iterator() {
+        // Create temporary directory for test database
+        let temp_dir = tempdir().unwrap();
+        let db_path = temp_dir.path().join("test_iter.db");
+
+        // Create storage
+        let storage = RocksDbStorage::new(&db_path).unwrap();
+        
+        // Create and store test objects
+        let mut objects = Vec::new();
+        for i in 0..5 {
+            let obj = TokenizedObject {
+                id: unique_id(),
+                holder: unique_id(),
+                token_type: TokenType::Native,
+                token_manager: unique_id(),
+                data: vec![i as u8; 4],
+            };
+            objects.push(obj.clone());
+            storage.set(&obj).unwrap();
+        }
+        
+        // Test iterator
+        let mut iter = storage.scan();
+        let mut found_objects = 0;
+        
+        while let Some(obj) = iter.next() {
+            // Verify the object is one of our test objects
+            found_objects += 1;
+            let found = objects.iter().any(|test_obj| {
+                test_obj.id == obj.id &&
+                test_obj.holder == obj.holder &&
+                test_obj.token_type == obj.token_type &&
+                test_obj.token_manager == obj.token_manager &&
+                test_obj.data == obj.data
+            });
+            assert!(found, "Iterator returned an unexpected object");
+        }
+        
+        // Verify we found all our objects
+        assert_eq!(found_objects, objects.len());
     }
 }

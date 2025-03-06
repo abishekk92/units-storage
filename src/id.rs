@@ -1,10 +1,11 @@
 use curve25519_dalek::edwards::CompressedEdwardsY;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::ops::Deref;
 
 // UnitsObjectId uniquely identifies an instance of tokenized object.
 // It is a 32 byte long unique identifier, resembling a public key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnitsObjectId([u8; 32]);
 
 impl Default for UnitsObjectId {

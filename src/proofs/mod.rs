@@ -3,12 +3,14 @@ pub mod lattice_hash;
 pub mod lattice_proof_engine;
 pub mod merkle_proof;
 
-#[derive(Debug, Clone)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenizedObjectProof {
     pub proof: Vec<u8>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StateProof {
     pub proof: Vec<u8>,
 }

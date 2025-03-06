@@ -1,16 +1,16 @@
 # CLAUDE.md - Coding Assistant Reference
 
 ## Build Commands
-- Build: `cargo build`
-- Check: `cargo check`
-- Run tests: `cargo test`
-- Run single test: `cargo test test_name`
-- Run with features: `cargo test --features feature_name`
-- Run with release: `cargo build --release`
+- Build: `fish -c "cargo build"`
+- Check: `fish -c "cargo check"`
+- Run tests: `fish -c "cargo test"`
+- Run single test: `fish -c "cargo test test_name"`
+- Run with features: `fish -c "cargo test --features feature_name"`
+- Run with release: `fish -c "cargo build --release"`
 
 ## Code Style Guidelines
-- **Formatting**: Use `cargo fmt` for automatic formatting
-- **Linting**: Run `cargo clippy` to find issues
+- **Formatting**: Use `fish -c "cargo fmt"` for automatic formatting
+- **Linting**: Run `fish -c "cargo clippy"` to find issues
 - **Naming**: Use snake_case for variables/functions, CamelCase for types/traits
 - **Imports**: Group std imports first, then external crates, then internal modules
 - **Error Handling**: Use Result<T, E> with ? operator for propagation
