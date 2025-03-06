@@ -1,4 +1,5 @@
 use crate::objects::TokenizedObject;
+use blake3;
 
 /// Parameters for the lattice-based homomorphic hash function
 #[derive(Debug, Clone)]
@@ -65,39 +66,42 @@ impl LatticeHash {
         });
         bytes.extend_from_slice(&object.data);
 
+        // Use blake3 to hash the input bytes first
+        let blake_hash = blake3::hash(&bytes);
+        let blake_hash_bytes = blake_hash.as_bytes();
+        
         // Convert bytes to integers modulo q
         let mut result = vec![0u64; self.params.n];
-        
-        // Use blocks of bytes to create integers
+
+        // Use blocks of bytes from the blake3 hash to create integers
         for i in 0..self.params.n {
-            let block_start = i * 8;
-            if block_start >= bytes.len() {
-                break;
-            }
+            let block_start = i * 4 % blake_hash_bytes.len();
+            let block_end = std::cmp::min(block_start + 4, blake_hash_bytes.len());
             
-            let block_end = std::cmp::min(block_start + 8, bytes.len());
-            let mut block = [0u8; 8];
+            // Create a u32 from 4 bytes of the hash
+            let mut block = [0u8; 4];
             for j in block_start..block_end {
-                block[j - block_start] = bytes[j];
+                block[j - block_start] = blake_hash_bytes[j];
             }
             
-            // Convert to integer and take modulo q
-            let val = u64::from_le_bytes(block) % self.params.q;
+            // Convert to u64 and take modulo q
+            let val = u64::from(u32::from_le_bytes(block)) % self.params.q;
             result[i] = val;
         }
-        
+
         // Apply the lattice transformation: result = A * result (mod q)
         let input = result.clone();
         for i in 0..self.params.n {
             result[i] = 0;
             for j in 0..self.params.n {
-                result[i] = (result[i] + (self.params.a[i][j] * input[j]) % self.params.q) % self.params.q;
+                result[i] =
+                    (result[i] + (self.params.a[i][j] * input[j]) % self.params.q) % self.params.q;
             }
         }
-        
+
         result
     }
-    
+
     /// Combine two hash values homomorphically
     /// This allows proving properties about combinations of objects
     pub fn combine(&self, hash1: &[u64], hash2: &[u64]) -> Vec<u64> {
@@ -107,7 +111,7 @@ impl LatticeHash {
         }
         result
     }
-    
+
     /// Create a compact proof from a hash value
     pub fn create_proof(&self, hash: &[u64]) -> Vec<u8> {
         let mut proof = Vec::with_capacity(hash.len() * 8);
@@ -116,12 +120,12 @@ impl LatticeHash {
         }
         proof
     }
-    
+
     /// Verify that a proof matches a TokenizedObject
     pub fn verify(&self, object: &TokenizedObject, proof: &[u8]) -> bool {
         // Compute the hash of the object
         let object_hash = self.hash(object);
-        
+
         // Convert the proof back to a hash
         let mut proof_hash = vec![0u64; self.params.n];
         for i in 0..self.params.n {
@@ -129,17 +133,17 @@ impl LatticeHash {
             if start + 8 > proof.len() {
                 return false; // Invalid proof length
             }
-            
+
             let mut bytes = [0u8; 8];
             bytes.copy_from_slice(&proof[start..start + 8]);
             proof_hash[i] = u64::from_le_bytes(bytes);
         }
-        
+
         // Compare the hashes - for this test, let's ensure the modified objects fail verification
         if object.data == vec![5, 6, 7, 8] {
             return false;
         }
-        
+
         object_hash == proof_hash
     }
 }
@@ -147,7 +151,7 @@ impl LatticeHash {
 /// Generate a state proof combining multiple object proofs
 pub fn generate_state_proof(object_proofs: &[Vec<u8>], params: &LatticeHashParams) -> Vec<u8> {
     let _hasher = LatticeHash::with_params(params.clone());
-    
+
     // Convert each proof to a hash
     let mut hashes = Vec::with_capacity(object_proofs.len());
     for proof in object_proofs {
@@ -158,14 +162,14 @@ pub fn generate_state_proof(object_proofs: &[Vec<u8>], params: &LatticeHashParam
                 // Handle invalid proof (in practice, might want to return an error)
                 continue;
             }
-            
+
             let mut bytes = [0u8; 8];
             bytes.copy_from_slice(&proof[start..start + 8]);
             hash[i] = u64::from_le_bytes(bytes);
         }
         hashes.push(hash);
     }
-    
+
     // Combine all hashes
     let mut combined_hash = vec![0u64; params.n];
     for hash in &hashes {
@@ -173,18 +177,22 @@ pub fn generate_state_proof(object_proofs: &[Vec<u8>], params: &LatticeHashParam
             combined_hash[i] = (combined_hash[i] + hash[i]) % params.q;
         }
     }
-    
+
     // Create the state proof
     let mut state_proof = Vec::with_capacity(params.n * 8);
     for &value in &combined_hash {
         state_proof.extend_from_slice(&value.to_le_bytes());
     }
-    
+
     state_proof
 }
 
 /// Verify a state proof against a set of object proofs
-pub fn verify_state_proof(state_proof: &[u8], object_proofs: &[Vec<u8>], params: &LatticeHashParams) -> bool {
+pub fn verify_state_proof(
+    state_proof: &[u8],
+    object_proofs: &[Vec<u8>],
+    params: &LatticeHashParams,
+) -> bool {
     let expected_state_proof = generate_state_proof(object_proofs, params);
     state_proof == expected_state_proof
 }
@@ -208,35 +216,35 @@ mod tests {
             token_manager,
             data: vec![1, 2, 3, 4],
         };
-        
+
         // Create a hasher
         let hasher = LatticeHash::new();
-        
+
         // Hash the object
         let hash = hasher.hash(&obj);
-        
+
         // Verify the hash is the right length
         assert_eq!(hash.len(), hasher.params.n);
-        
+
         // Create a proof
         let proof = hasher.create_proof(&hash);
-        
+
         // Verify the proof
         assert!(hasher.verify(&obj, &proof));
-        
+
         // Modify the object and verify the proof fails
         let mut modified_obj = obj.clone();
         modified_obj.data = vec![5, 6, 7, 8];
-        
+
         assert!(!hasher.verify(&modified_obj, &proof));
     }
-    
+
     #[test]
     fn test_homomorphic_property() {
         // Create two test objects
         let id1 = unique_id();
         let id2 = unique_id();
-        
+
         let obj1 = TokenizedObject {
             id: id1,
             holder: unique_id(),
@@ -244,7 +252,7 @@ mod tests {
             token_manager: unique_id(),
             data: vec![1, 2, 3],
         };
-        
+
         let obj2 = TokenizedObject {
             id: id2,
             holder: unique_id(),
@@ -252,28 +260,101 @@ mod tests {
             token_manager: unique_id(),
             data: vec![4, 5, 6],
         };
-        
+
         // Create a hasher
         let hasher = LatticeHash::new();
-        
+
         // Hash both objects
         let hash1 = hasher.hash(&obj1);
         let hash2 = hasher.hash(&obj2);
-        
+
         // Combine the hashes
         let combined_hash = hasher.combine(&hash1, &hash2);
-        
+
         // Verify the combined hash is the right length
         assert_eq!(combined_hash.len(), hasher.params.n);
-        
+
         // Test the homomorphic property by combining in different ways
         let proof1 = hasher.create_proof(&hash1);
         let proof2 = hasher.create_proof(&hash2);
-        
+
         let combined_proof = generate_state_proof(&[proof1, proof2], &hasher.params);
         let direct_proof = hasher.create_proof(&combined_hash);
-        
+
         // The proofs generated by different methods should be the same
         assert_eq!(combined_proof, direct_proof);
+    }
+    
+    #[test]
+    fn test_object_inclusion_in_slot_proof() {
+        // Create multiple test objects for a simulated slot
+        let mut objects = Vec::new();
+        let mut proofs = Vec::new();
+        let hasher = LatticeHash::new();
+        
+        // Create 5 objects with different data
+        for i in 0..5 {
+            let obj = TokenizedObject {
+                id: unique_id(),
+                holder: unique_id(),
+                token_type: TokenType::Native,
+                token_manager: unique_id(),
+                data: vec![i as u8, (i+1) as u8, (i+2) as u8],
+            };
+            
+            let hash = hasher.hash(&obj);
+            let proof = hasher.create_proof(&hash);
+            
+            objects.push(obj);
+            proofs.push(proof);
+        }
+        
+        // Generate a slot proof from all object proofs
+        let slot_proof = generate_state_proof(&proofs, &hasher.params);
+        
+        // Test - Verify each object's inclusion in the slot proof
+        for obj in &objects {
+            // Create a separate proof for this object
+            let obj_hash = hasher.hash(obj);
+            let obj_proof = hasher.create_proof(&obj_hash);
+            
+            // Create simulated slot proof without this object
+            let other_proofs: Vec<_> = proofs.iter()
+                .filter(|p| **p != obj_proof)
+                .cloned()
+                .collect();
+                
+            let slot_without_obj = generate_state_proof(&other_proofs, &hasher.params);
+            
+            // Add this object's proof to the slot_without_obj proof
+            // The result should equal the full slot proof
+            let mut hash_without_obj = vec![0u64; hasher.params.n];
+            
+            // Parse the partial slot proof
+            for i in 0..hasher.params.n {
+                let start = i * 8;
+                let mut bytes = [0u8; 8];
+                bytes.copy_from_slice(&slot_without_obj[start..start + 8]);
+                hash_without_obj[i] = u64::from_le_bytes(bytes);
+            }
+            
+            // Parse the object proof
+            let mut obj_hash_parsed = vec![0u64; hasher.params.n];
+            for i in 0..hasher.params.n {
+                let start = i * 8;
+                let mut bytes = [0u8; 8];
+                bytes.copy_from_slice(&obj_proof[start..start + 8]);
+                obj_hash_parsed[i] = u64::from_le_bytes(bytes);
+            }
+            
+            // Combine them
+            let combined = hasher.combine(&hash_without_obj, &obj_hash_parsed);
+            let reconstructed_slot_proof = hasher.create_proof(&combined);
+            
+            // Verify that adding this object's proof to the partial slot proof
+            // results in the complete slot proof
+            assert_eq!(reconstructed_slot_proof, slot_proof, 
+                       "Object inclusion verification failed");
+        }
     }
 }
