@@ -5,15 +5,14 @@ use crate::id::UnitsObjectId;
 pub struct TokenizedObject {
     pub data: Vec<u8>,
     pub id: UnitsObjectId,
+    pub holder: UnitsObjectId,
     // Should we have this level of information here? It's fine for now, we can change this later
     // if we need to.
     pub token_type: TokenType,
-    pub holder: UnitsObjectId,
-    pub controller_program: UnitsObjectId,
-    // driver: [u8; 32], // TODO: Figure out a better way to represent the driver
+    pub token_manager: UnitsObjectId,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenType {
     Native,
     Custodial,

@@ -4,7 +4,7 @@ use std::ops::Deref;
 
 // UnitsObjectId uniquely identifies an instance of tokenized object.
 // It is a 32 byte long unique identifier, resembling a public key.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnitsObjectId([u8; 32]);
 
 impl Default for UnitsObjectId {
@@ -65,5 +65,87 @@ impl UnitsObjectId {
     /// Find an UnitsObjectId for given seeds
     pub fn find_uid(seeds: &[&[u8]]) -> (UnitsObjectId, u8) {
         UnitsObjectId::try_find_uid(seeds).expect("Failed to find a valid UnitsObjectId")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_id() {
+        let default_id = UnitsObjectId::default();
+        assert_eq!(*default_id, [0u8; 32]);
+    }
+
+    #[test]
+    fn test_new_id() {
+        let test_bytes = [1u8; 32];
+        let id = UnitsObjectId::new(test_bytes);
+        assert_eq!(*id, test_bytes);
+    }
+
+    #[test]
+    fn test_create_object_id() {
+        // Test with specific seeds and bump
+        let seed1 = b"test_seed_1";
+        let seed2 = b"test_seed_2";
+        let bump = 5;
+
+        let id = UnitsObjectId::create_object_id(&[seed1, seed2], bump);
+        
+        // Verify deterministic nature by creating the same ID again
+        let id2 = UnitsObjectId::create_object_id(&[seed1, seed2], bump);
+        assert_eq!(id, id2);
+
+        // Verify changing bump creates different ID
+        let id3 = UnitsObjectId::create_object_id(&[seed1, seed2], bump + 1);
+        assert_ne!(id, id3);
+
+        // Verify changing seeds creates different ID
+        let id4 = UnitsObjectId::create_object_id(&[seed2, seed1], bump);
+        assert_ne!(id, id4);
+    }
+
+    #[test]
+    fn test_is_off_curve() {
+        // Generate a valid object ID which should be guaranteed to be off-curve
+        let seed = b"curve_test_seed";
+        let (id, _) = UnitsObjectId::find_uid(&[seed]);
+        
+        // The object ID should be off-curve by definition of how find_uid works
+        assert!(UnitsObjectId::is_off_curve(&id));
+    }
+
+    #[test]
+    fn test_find_uid() {
+        let seed1 = b"unique_seed_1";
+        let seed2 = b"unique_seed_2";
+
+        // Test finding a valid UID
+        let (id, bump) = UnitsObjectId::find_uid(&[seed1, seed2]);
+        
+        // Verify we can recreate the same ID with found bump
+        let raw_id = UnitsObjectId::create_object_id(&[seed1, seed2], bump);
+        assert_eq!(*id, raw_id);
+
+        // Verify different seeds produce different IDs
+        let (id2, _) = UnitsObjectId::find_uid(&[seed2, seed1]);
+        assert_ne!(id, id2);
+    }
+
+    #[test]
+    fn test_try_find_uid() {
+        let seed = b"try_find_test";
+        
+        // Should find a valid ID
+        let result = UnitsObjectId::try_find_uid(&[seed]);
+        assert!(result.is_some());
+        
+        let (id, bump) = result.unwrap();
+        
+        // Verify we can recreate the ID with the returned bump
+        let raw_id = UnitsObjectId::create_object_id(&[seed], bump);
+        assert_eq!(*id, raw_id);
     }
 }

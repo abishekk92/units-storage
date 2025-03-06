@@ -4,6 +4,8 @@ pub mod id;
 pub mod objects;
 pub mod proofs;
 pub mod storage;
+pub mod sqlite_storage;
+pub mod rocksdb_storage;
 
 // Re-export the main types for convenience
 pub use id::UnitsObjectId;
@@ -22,7 +24,7 @@ mod tests {
             data: vec![1, 2, 3, 4],
             token_type: TokenType::Native,
             holder: UnitsObjectId::default(),
-            controller_program: UnitsObjectId::default(),
+            token_manager: UnitsObjectId::default(),
             id: UnitsObjectId::default(),
         };
         println!("{:?}", token);
