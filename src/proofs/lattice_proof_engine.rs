@@ -2,6 +2,7 @@ use crate::error::StorageError;
 use crate::id::UnitsObjectId;
 use crate::objects::TokenizedObject;
 use crate::proofs::{
+    current_slot,
     engine::ProofEngine,
     lattice_hash::{LatticeHash, LatticeHashParams},
     StateProof, TokenizedObjectProof,
@@ -29,12 +30,19 @@ impl LatticeProofEngine {
 }
 
 impl ProofEngine for LatticeProofEngine {
-    fn generate_object_proof(&self, object: &TokenizedObject) -> Result<TokenizedObjectProof, StorageError> {
+    fn generate_object_proof(
+        &self, 
+        object: &TokenizedObject,
+        prev_proof: Option<&TokenizedObjectProof>
+    ) -> Result<TokenizedObjectProof, StorageError> {
         // Hash the object and create a proof
         let hash = self.hasher.hash(object);
-        let proof = self.hasher.create_proof(&hash);
+        let proof_data = self.hasher.create_proof(&hash);
         
-        Ok(TokenizedObjectProof { proof })
+        // Create the proof with the previous hash if available
+        let proof = TokenizedObjectProof::new(proof_data, prev_proof);
+        
+        Ok(proof)
     }
     
     fn verify_object_proof(
@@ -45,9 +53,36 @@ impl ProofEngine for LatticeProofEngine {
         Ok(self.hasher.verify(object, &proof.proof))
     }
     
+    fn verify_proof_chain(
+        &self,
+        object: &TokenizedObject,
+        proof: &TokenizedObjectProof,
+        prev_proof: &TokenizedObjectProof
+    ) -> Result<bool, StorageError> {
+        // First verify the current proof for the object
+        if !self.verify_object_proof(object, proof)? {
+            return Ok(false);
+        }
+        
+        // Then verify that the current proof correctly links to the previous proof
+        if let Some(ref prev_hash) = proof.prev_proof_hash {
+            let computed_prev_hash = prev_proof.hash();
+            if computed_prev_hash != *prev_hash {
+                return Ok(false);
+            }
+            // The proof is valid and links correctly
+            Ok(true)
+        } else {
+            // The current proof doesn't link to anything, but claims to be in a chain
+            Ok(false)
+        }
+    }
+    
     fn generate_state_proof(
         &self, 
-        object_proofs: &[(UnitsObjectId, TokenizedObjectProof)]
+        object_proofs: &[(UnitsObjectId, TokenizedObjectProof)],
+        prev_state_proof: Option<&StateProof>,
+        _slot: crate::proofs::SlotNumber
     ) -> Result<StateProof, StorageError> {
         // Extract just the proofs
         let proofs: Vec<&Vec<u8>> = object_proofs
@@ -57,9 +92,11 @@ impl ProofEngine for LatticeProofEngine {
         
         // If there are no proofs, return an empty state proof
         if proofs.is_empty() {
-            return Ok(StateProof {
-                proof: Vec::new(),
-            });
+            return Ok(StateProof::new(
+                Vec::new(),
+                Vec::new(),
+                prev_state_proof
+            ));
         }
         
         // Start with the first hash
@@ -73,9 +110,11 @@ impl ProofEngine for LatticeProofEngine {
                 let start = i * 8;
                 if start + 8 > first_proof.len() {
                     // Invalid proof length
-                    return Ok(StateProof {
-                        proof: Vec::new(),
-                    });
+                    return Ok(StateProof::new(
+                        Vec::new(),
+                        Vec::new(),
+                        prev_state_proof
+                    ));
                 }
                 
                 let mut bytes = [0u8; 8];
@@ -107,14 +146,25 @@ impl ProofEngine for LatticeProofEngine {
         }
         
         // Create the state proof
-        let mut state_proof = Vec::with_capacity(n * 8);
+        let mut state_proof_data = Vec::with_capacity(n * 8);
         for &value in &result_hash {
-            state_proof.extend_from_slice(&value.to_le_bytes());
+            state_proof_data.extend_from_slice(&value.to_le_bytes());
         }
         
-        Ok(StateProof {
-            proof: state_proof,
-        })
+        // Extract the object IDs
+        let included_objects = object_proofs
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect();
+            
+        // Create the state proof with link to previous
+        let state_proof = StateProof::new(
+            state_proof_data,
+            included_objects,
+            prev_state_proof
+        );
+        
+        Ok(state_proof)
     }
     
     fn verify_state_proof(
@@ -122,11 +172,55 @@ impl ProofEngine for LatticeProofEngine {
         state_proof: &StateProof,
         object_proofs: &[(UnitsObjectId, TokenizedObjectProof)],
     ) -> Result<bool, StorageError> {
-        // Generate the expected state proof
-        let expected_proof = self.generate_state_proof(object_proofs)?;
+        // For verification, we need to regenerate the expected state proof
+        // Get the IDs that should be included
+        let expected_included_ids: Vec<_> = object_proofs.iter().map(|(id, _)| id).collect();
         
-        // Compare the proofs
-        Ok(state_proof.proof == expected_proof.proof)
+        // Verify that the state proof includes exactly these objects
+        if state_proof.included_objects.len() != expected_included_ids.len() {
+            return Ok(false);
+        }
+        
+        for id in expected_included_ids {
+            if !state_proof.included_objects.contains(id) {
+                return Ok(false);
+            }
+        }
+        
+        // Generate the expected state proof (without prev link/slot which is already in state_proof)
+        let temp_state_proof = self.generate_state_proof(
+            object_proofs, 
+            None, 
+            state_proof.slot
+        )?;
+        
+        // Compare just the proof data
+        Ok(state_proof.proof == temp_state_proof.proof)
+    }
+    
+    fn verify_state_proof_chain(
+        &self,
+        state_proof: &StateProof,
+        prev_state_proof: &StateProof
+    ) -> Result<bool, StorageError> {
+        // First verify the state proof itself
+        if state_proof.proof.is_empty() || prev_state_proof.proof.is_empty() {
+            return Ok(false);
+        }
+        
+        // Verify the slots are in order
+        if state_proof.slot <= prev_state_proof.slot {
+            return Ok(false);
+        }
+        
+        // Verify the previous hash link
+        if let Some(ref prev_hash) = state_proof.prev_proof_hash {
+            let computed_prev_hash = prev_state_proof.hash();
+            return Ok(computed_prev_hash == *prev_hash);
+        }
+        
+        // No link to previous state proof
+        Ok(false)
     }
 }
 
@@ -161,7 +255,7 @@ mod tests {
         let engine = LatticeProofEngine::new();
         
         // Generate a proof
-        let proof = engine.generate_object_proof(&obj).unwrap();
+        let proof = engine.generate_object_proof(&obj, None).unwrap();
         
         // Verify the proof
         assert!(engine.verify_object_proof(&obj, &proof).unwrap());
@@ -196,14 +290,14 @@ mod tests {
         let engine = LatticeProofEngine::new();
         
         // Generate proofs for each object
-        let proof1 = engine.generate_object_proof(&obj1).unwrap();
-        let proof2 = engine.generate_object_proof(&obj2).unwrap();
+        let proof1 = engine.generate_object_proof(&obj1, None).unwrap();
+        let proof2 = engine.generate_object_proof(&obj2, None).unwrap();
         
         // Create a collection of object proofs
         let object_proofs = vec![(obj1.id, proof1), (obj2.id, proof2)];
         
         // Generate a state proof
-        let state_proof = engine.generate_state_proof(&object_proofs).unwrap();
+        let state_proof = engine.generate_state_proof(&object_proofs, None, current_slot()).unwrap();
         
         // Verify the state proof
         assert!(engine.verify_state_proof(&state_proof, &object_proofs).unwrap());

@@ -24,6 +24,22 @@ pub enum StorageError {
     #[error("Proof verification failed: {0}")]
     ProofVerification(String),
     
+    /// Errors that occur during write-ahead log operations
+    #[error("Write-ahead log error: {0}")]
+    WAL(String),
+    
+    /// Errors that occur when an object version is not found at a specific slot
+    #[error("Object not found at slot {0}")]
+    ObjectNotAtSlot(u64),
+    
+    /// Errors that occur when a proof version is not found at a specific slot
+    #[error("Proof not found at slot {0}")]
+    ProofNotAtSlot(u64),
+    
+    /// Errors when a proof chain validation fails
+    #[error("Proof chain validation failed: {0}")]
+    ProofChainInvalid(String),
+    
     /// Generic errors that don't fit in other categories
     #[error("Other error: {0}")]
     Other(String),

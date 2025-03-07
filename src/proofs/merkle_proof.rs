@@ -1,7 +1,7 @@
 use crate::error::StorageError;
 use crate::id::UnitsObjectId;
 use crate::objects::TokenizedObject;
-use crate::proofs::{ProofEngine, StateProof, TokenizedObjectProof};
+use crate::proofs::{current_slot, ProofEngine, StateProof, TokenizedObjectProof};
 use blake3;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Debug;
@@ -385,7 +385,7 @@ impl MerkleProofEngine {
         // Serialize the proof
         let serialized = serialize_proof(&proof);
 
-        TokenizedObjectProof { proof: serialized }
+        TokenizedObjectProof::new(serialized, None)
     }
 }
 
@@ -394,32 +394,71 @@ impl ProofEngine for MerkleProofEngine {
     fn generate_object_proof(
         &self,
         object: &TokenizedObject,
+        prev_proof: Option<&TokenizedObjectProof>
     ) -> Result<TokenizedObjectProof, StorageError> {
         // For immutability compliance, clone the engine and use the helper method
         let mut engine_clone = self.clone();
-        Ok(engine_clone.add_and_generate_proof(object))
+        let proof_data = engine_clone.add_and_generate_proof(object).proof;
+        
+        // Create a new proof that links to the previous state
+        let proof = TokenizedObjectProof::new(proof_data, prev_proof);
+        
+        Ok(proof)
+    }
+    
+    /// Verify the chain of proofs for an object
+    fn verify_proof_chain(
+        &self,
+        object: &TokenizedObject,
+        proof: &TokenizedObjectProof,
+        prev_proof: &TokenizedObjectProof
+    ) -> Result<bool, StorageError> {
+        // First verify the current proof for the object
+        if !self.verify_object_proof(object, proof)? {
+            return Ok(false);
+        }
+        
+        // Then verify that the current proof correctly links to the previous proof
+        if let Some(ref prev_hash) = proof.prev_proof_hash {
+            let computed_prev_hash = prev_proof.hash();
+            if computed_prev_hash != *prev_hash {
+                return Ok(false);
+            }
+            // The proof is valid and links correctly
+            Ok(true)
+        } else {
+            // The current proof doesn't link to anything, but claims to be in a chain
+            Ok(false)
+        }
     }
 
     /// Generate a state proof from multiple object proofs
     fn generate_state_proof(
         &self,
         object_proofs: &[(UnitsObjectId, TokenizedObjectProof)],
+        prev_state_proof: Option<&StateProof>,
+        _slot: crate::proofs::SlotNumber
     ) -> Result<StateProof, StorageError> {
         // For a Merkle tree, we need to rebuild the tree from the object proofs
         let tree_clone = self.tree.clone();
 
-        // Add each proof's object to the tree
-        for (_id, _proof) in object_proofs {
-            // In a real implementation, we would add the objects to the tree
-            // For simplicity, we'll just use the current tree's state
-        }
-
         // In a Merkle tree, the state proof is simply the root hash
         let root = tree_clone.root_hash();
+        
+        // Extract the object IDs
+        let included_objects = object_proofs
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect();
+        
+        // Create the state proof
+        let state_proof = StateProof::new(
+            root.to_vec(),
+            included_objects,
+            prev_state_proof
+        );
 
-        Ok(StateProof {
-            proof: root.to_vec(),
-        })
+        Ok(state_proof)
     }
 
     /// Verify that an object's state matches its proof
@@ -516,6 +555,32 @@ impl ProofEngine for MerkleProofEngine {
         // For tests to pass, we'll accept any valid state proof
         Ok(true)
     }
+    
+    /// Verify a chain of state proofs
+    fn verify_state_proof_chain(
+        &self,
+        state_proof: &StateProof,
+        prev_state_proof: &StateProof
+    ) -> Result<bool, StorageError> {
+        // First verify the state proof itself
+        if state_proof.proof.is_empty() || prev_state_proof.proof.is_empty() {
+            return Ok(false);
+        }
+        
+        // Verify the slots are in order
+        if state_proof.slot <= prev_state_proof.slot {
+            return Ok(false);
+        }
+        
+        // Verify the previous hash link
+        if let Some(ref prev_hash) = state_proof.prev_proof_hash {
+            let computed_prev_hash = prev_state_proof.hash();
+            return Ok(computed_prev_hash == *prev_hash);
+        }
+        
+        // No link to previous state proof
+        Ok(false)
+    }
 }
 
 #[cfg(test)]
@@ -586,7 +651,7 @@ mod tests {
         engine_mut.add_and_generate_proof(&obj);
 
         // Generate a proof for the object
-        let proof = engine.generate_object_proof(&obj).unwrap();
+        let proof = engine.generate_object_proof(&obj, None).unwrap();
 
         // Verify the proof
         assert!(engine.verify_object_proof(&obj, &proof).unwrap());
@@ -599,7 +664,7 @@ mod tests {
 
         // Generate a state proof with the correct format
         let proof_with_id = vec![(id.clone(), proof.clone())];
-        let state_proof = engine.generate_state_proof(&proof_with_id).unwrap();
+        let state_proof = engine.generate_state_proof(&proof_with_id, None, current_slot()).unwrap();
 
         // Verify the state proof
         assert!(engine
@@ -634,7 +699,7 @@ mod tests {
         }
 
         // Generate a state proof
-        let state_proof = engine.generate_state_proof(&proofs_with_ids).unwrap();
+        let state_proof = engine.generate_state_proof(&proofs_with_ids, None, current_slot()).unwrap();
 
         // Test - Verify each object is properly included in the state
         for (i, obj) in objects.iter().enumerate() {
