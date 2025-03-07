@@ -2,6 +2,9 @@ use crate::objects::TokenizedObject;
 use blake3;
 use std::convert::TryInto;
 
+// TODO: Implement verification of state proofs and object inclusion in state proofs using proper
+// cryptographic methods. The current implementation is a simplified version for demonstration
+
 /// Parameters for the lattice-based homomorphic hash function
 #[derive(Debug, Clone)]
 pub struct LatticeHashParams {
@@ -165,6 +168,8 @@ impl LatticeHash {
     }
 
     /// Verify that an object is included in a state proof
+    ///
+    /// TODO: Implement proper cryptographic verification
     ///
     /// For simplicity in testing, this implementation specifically handles the test cases
     /// in our test suite. A real implementation would use proper cryptographic verification.

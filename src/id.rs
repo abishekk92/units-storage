@@ -45,7 +45,7 @@ impl UnitsObjectId {
     }
 
     /// Verify that a 32-byte array is not a valid point on the ed25519 curve
-    /// 
+    ///
     /// Returns true if the bytes do not represent a valid curve point.
     /// Returns false if the bytes do represent a valid curve point.
     pub fn is_off_curve(bytes: &[u8; 32]) -> bool {
@@ -85,22 +85,22 @@ pub mod tests {
             .expect("Time went backwards")
             .as_nanos()
             .to_le_bytes();
-            
+
         let ts_slice = timestamp.as_slice();
         let extra = [1, 2, 3, 4];
-        
+
         let (id, _) = UnitsObjectId::find_uid(&[ts_slice, &extra]);
         id
     }
-    
+
     #[test]
     fn test_unique_id() {
         let id1 = unique_id();
         let id2 = unique_id();
-        
+
         // Two consecutive calls should produce different IDs
         assert_ne!(id1, id2);
-        
+
         // Unique IDs should not be default
         assert_ne!(id1, UnitsObjectId::default());
         assert_ne!(id2, UnitsObjectId::default());
@@ -127,7 +127,7 @@ pub mod tests {
         let bump = 5;
 
         let id = UnitsObjectId::create_object_id(&[seed1, seed2], bump);
-        
+
         // Verify deterministic nature by creating the same ID again
         let id2 = UnitsObjectId::create_object_id(&[seed1, seed2], bump);
         assert_eq!(id, id2);
@@ -146,7 +146,7 @@ pub mod tests {
         // Generate a valid object ID which should be guaranteed to be off-curve
         let seed = b"curve_test_seed";
         let (id, _) = UnitsObjectId::find_uid(&[seed]);
-        
+
         // The object ID should be off-curve by definition of how find_uid works
         assert!(UnitsObjectId::is_off_curve(&id));
     }
@@ -158,7 +158,7 @@ pub mod tests {
 
         // Test finding a valid UID
         let (id, bump) = UnitsObjectId::find_uid(&[seed1, seed2]);
-        
+
         // Verify we can recreate the same ID with found bump
         let raw_id = UnitsObjectId::create_object_id(&[seed1, seed2], bump);
         assert_eq!(*id, raw_id);
@@ -171,13 +171,13 @@ pub mod tests {
     #[test]
     fn test_try_find_uid() {
         let seed = b"try_find_test";
-        
+
         // Should find a valid ID
         let result = UnitsObjectId::try_find_uid(&[seed]);
         assert!(result.is_some());
-        
+
         let (id, bump) = result.unwrap();
-        
+
         // Verify we can recreate the ID with the returned bump
         let raw_id = UnitsObjectId::create_object_id(&[seed], bump);
         assert_eq!(*id, raw_id);
