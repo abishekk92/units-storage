@@ -1,12 +1,11 @@
 # CLAUDE.md - Coding Assistant Reference
 
 ## Build Commands
-- Build: `fish -c "cargo build"`
-- Check: `fish -c "cargo check"`
-- Run tests: `fish -c "cargo test"`
-- Run single test: `fish -c "cargo test test_name"`
-- Run with features: `fish -c "cargo test --features feature_name"`
-- Run with release: `fish -c "cargo build --release"`
+- Build: `fish -c "cargo build --features all"`
+- Check: `fish -c "cargo check --features all"`
+- Run tests: `fish -c "cargo test --features all"`
+- Run single test: `fish -c "cargo test test_name --features all"`
+- Run with release: `fish -c "cargo build --release --features all"`
 
 ## Code Style Guidelines
 - **Formatting**: Use `fish -c "cargo fmt"` for automatic formatting
