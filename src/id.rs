@@ -45,11 +45,14 @@ impl UnitsObjectId {
     }
 
     /// Verify that a 32-byte array is not a valid point on the ed25519 curve
+    /// 
+    /// Returns true if the bytes do not represent a valid curve point.
+    /// Returns false if the bytes do represent a valid curve point.
     pub fn is_off_curve(bytes: &[u8; 32]) -> bool {
         let Ok(compressed_edwards_y) = CompressedEdwardsY::from_slice(bytes.as_ref()) else {
-            return false;
+            return true; // Cannot even parse as a point format, so it's off-curve
         };
-        compressed_edwards_y.decompress().is_some()
+        compressed_edwards_y.decompress().is_none() // If we can't decompress it, it's off-curve
     }
 
     /// Try Find an UnitsObjectId for given seeds

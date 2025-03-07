@@ -1,9 +1,11 @@
 use crate::{
+    error::StorageError,
     id::UnitsObjectId,
     objects::{TokenType, TokenizedObject},
     proofs::{LatticeProofEngine, ProofEngine, StateProof, TokenizedObjectProof},
     storage_traits::{UnitsStorage, UnitsStorageIterator, UnitsStorageProofEngine},
 };
+use anyhow::{Context, Result};
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions},
     Row,
@@ -137,7 +139,7 @@ impl SqliteStorage {
 }
 
 impl UnitsStorage for SqliteStorage {
-    fn get(&self, id: &UnitsObjectId) -> Option<TokenizedObject> {
+    fn get(&self, id: &UnitsObjectId) -> Result<Option<TokenizedObject>, StorageError> {
         self.rt.block_on(async {
             let query = "SELECT id, holder, token_type, token_manager, data FROM objects WHERE id = ?";
             
@@ -145,12 +147,13 @@ impl UnitsStorage for SqliteStorage {
                 .bind(id.as_ref())
                 .fetch_optional(&self.pool)
                 .await
-                .ok()?;
+                .with_context(|| format!("Failed to fetch object with ID: {:?}", id))?;
+                
+            if row.is_none() {
+                return Ok(None);
+            }
             
-            let row = match row {
-                Some(row) => row,
-                None => return None,
-            };
+            let row = row.unwrap();
 
             let id_blob: Vec<u8> = row.get(0);
             let holder_blob: Vec<u8> = row.get(1);
@@ -179,26 +182,26 @@ impl UnitsStorage for SqliteStorage {
             // Convert token type
             let token_type = match SqliteStorage::int_to_token_type(token_type_int) {
                 Ok(tt) => tt,
-                Err(_) => TokenType::Native, // Default to Native if invalid
+                Err(e) => return Err(StorageError::Other(e)),
             };
 
-            Some(TokenizedObject {
+            Ok(Some(TokenizedObject {
                 id: UnitsObjectId::new(id_array),
                 holder: UnitsObjectId::new(holder_array),
                 token_type,
                 token_manager: UnitsObjectId::new(token_manager_array),
                 data,
-            })
+            }))
         })
     }
 
-    fn set(&self, object: &TokenizedObject) -> Result<(), String> {
+    fn set(&self, object: &TokenizedObject) -> Result<(), StorageError> {
         self.rt.block_on(async {
             // Use a transaction to ensure atomicity
             let mut tx = self.pool
                 .begin()
                 .await
-                .map_err(|e| format!("Failed to start transaction: {}", e))?;
+                .with_context(|| "Failed to start database transaction")?;
             
             // Store the object
             let token_type_int = Self::token_type_to_int(&object.token_type);
@@ -212,53 +215,54 @@ impl UnitsStorage for SqliteStorage {
                 .bind(&object.data)
                 .execute(&mut *tx)
                 .await
-                .map_err(|e| format!("Failed to store object: {}", e))?;
+                .with_context(|| format!("Failed to store object with ID: {:?}", object.id))?;
                 
             // Generate and store a proof for the object
-            let proof = self.proof_engine.generate_object_proof(object);
+            let proof = self.proof_engine.generate_object_proof(object)
+                .with_context(|| format!("Failed to generate proof for object ID: {:?}", object.id))?;
             
             sqlx::query("INSERT OR REPLACE INTO object_proofs (object_id, proof) VALUES (?, ?)")
                 .bind(object.id.as_ref())
                 .bind(&proof.proof)
                 .execute(&mut *tx)
                 .await
-                .map_err(|e| format!("Failed to store object proof: {}", e))?;
+                .with_context(|| format!("Failed to store proof for object ID: {:?}", object.id))?;
                 
             // Commit the transaction
             tx.commit()
                 .await
-                .map_err(|e| format!("Failed to commit transaction: {}", e))?;
+                .with_context(|| "Failed to commit transaction")?;
 
             Ok(())
         })
     }
 
-    fn delete(&self, id: &UnitsObjectId) -> Result<(), String> {
+    fn delete(&self, id: &UnitsObjectId) -> Result<(), StorageError> {
         self.rt.block_on(async {
             // Use a transaction for consistency
             let mut tx = self.pool
                 .begin()
                 .await
-                .map_err(|e| format!("Failed to start transaction: {}", e))?;
+                .with_context(|| "Failed to start transaction for delete operation")?;
 
             // Delete from object_proofs
             sqlx::query("DELETE FROM object_proofs WHERE object_id = ?")
                 .bind(id.as_ref())
                 .execute(&mut *tx)
                 .await
-                .map_err(|e| format!("Failed to delete object proofs: {}", e))?;
+                .with_context(|| format!("Failed to delete proofs for object ID: {:?}", id))?;
 
             // Delete from objects
             sqlx::query("DELETE FROM objects WHERE id = ?")
                 .bind(id.as_ref())
                 .execute(&mut *tx)
                 .await
-                .map_err(|e| format!("Failed to delete object: {}", e))?;
+                .with_context(|| format!("Failed to delete object with ID: {:?}", id))?;
 
             // Commit transaction
             tx.commit()
                 .await
-                .map_err(|e| format!("Failed to commit transaction: {}", e))?;
+                .with_context(|| "Failed to commit delete transaction")?;
 
             Ok(())
         })
@@ -279,20 +283,17 @@ impl UnitsStorageProofEngine for SqliteStorage {
         &self.proof_engine
     }
     
-    fn generate_state_proof(&self) -> StateProof {
+    fn generate_state_proof(&self) -> Result<StateProof, StorageError> {
         self.rt.block_on(async {
             // Get all objects and their proofs
             let query = "SELECT o.id, p.proof 
                          FROM objects o
                          LEFT JOIN object_proofs p ON o.id = p.object_id";
 
-            let rows = match sqlx::query(query)
+            let rows = sqlx::query(query)
                 .fetch_all(&self.pool)
                 .await
-            {
-                Ok(rows) => rows,
-                Err(_) => return StateProof { proof: Vec::new() },
-            };
+                .with_context(|| "Failed to fetch objects and proofs for state proof generation")?;
 
             // Collect all object IDs and their proofs
             let mut object_proofs = Vec::new();
@@ -321,7 +322,7 @@ impl UnitsStorageProofEngine for SqliteStorage {
             }
             
             // Generate the state proof
-            let state_proof = self.proof_engine.generate_state_proof(&object_proofs);
+            let state_proof = self.proof_engine.generate_state_proof(&object_proofs)?;
             
             // Store the proof for future reference
             let _ = sqlx::query("INSERT INTO state_proofs (timestamp, proof) VALUES (?, ?)")
@@ -330,11 +331,11 @@ impl UnitsStorageProofEngine for SqliteStorage {
                 .execute(&self.pool)
                 .await;
 
-            state_proof
+            Ok(state_proof)
         })
     }
 
-    fn get_proof(&self, id: &UnitsObjectId) -> Option<TokenizedObjectProof> {
+    fn get_proof(&self, id: &UnitsObjectId) -> Result<Option<TokenizedObjectProof>, StorageError> {
         self.rt.block_on(async {
             // First check if we have a stored proof
             let query = "SELECT proof FROM object_proofs WHERE object_id = ?";
@@ -343,16 +344,20 @@ impl UnitsStorageProofEngine for SqliteStorage {
                 .bind(id.as_ref())
                 .fetch_optional(&self.pool)
                 .await
-                .ok()?;
-
+                .with_context(|| format!("Failed to fetch proof for object ID: {:?}", id))?;
+                
             if let Some(row) = row {
                 let proof: Vec<u8> = row.get(0);
-                return Some(TokenizedObjectProof { proof });
+                return Ok(Some(TokenizedObjectProof { proof }));
             }
             
             // If no stored proof, get the object and generate one
-            let object = self.get(id)?;
-            let proof = self.proof_engine.generate_object_proof(&object);
+            let object = match self.get(id)? {
+                Some(obj) => obj,
+                None => return Ok(None),
+            };
+            
+            let proof = self.proof_engine.generate_object_proof(&object)?;
             
             // Store the proof for future reference
             let _ = sqlx::query("INSERT OR REPLACE INTO object_proofs (object_id, proof) VALUES (?, ?)")
@@ -361,15 +366,15 @@ impl UnitsStorageProofEngine for SqliteStorage {
                 .execute(&self.pool)
                 .await;
                 
-            Some(proof)
+            Ok(Some(proof))
         })
     }
 
-    fn verify_proof(&self, id: &UnitsObjectId, proof: &TokenizedObjectProof) -> bool {
+    fn verify_proof(&self, id: &UnitsObjectId, proof: &TokenizedObjectProof) -> Result<bool, StorageError> {
         // Get the object
-        let object = match self.get(id) {
+        let object = match self.get(id)? {
             Some(obj) => obj,
-            None => return false,
+            None => return Ok(false),
         };
         
         // Verify the proof
@@ -377,22 +382,23 @@ impl UnitsStorageProofEngine for SqliteStorage {
     }
 }
 
-impl UnitsStorageIterator for SqliteStorageIterator {
-    fn next(&mut self) -> Option<TokenizedObject> {
+impl Iterator for SqliteStorageIterator {
+    type Item = Result<TokenizedObject, StorageError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
         self.rt.block_on(async {
             // Query a single object at the current index
             let query =
                 "SELECT id, holder, token_type, token_manager, data FROM objects LIMIT 1 OFFSET ?";
 
-            let row = sqlx::query(query)
+            let row = match sqlx::query(query)
                 .bind(self.current_index)
                 .fetch_optional(&self.pool)
                 .await
-                .ok()?;
-
-            let row = match row {
-                Some(row) => row,
-                None => return None,
+            {
+                Ok(Some(row)) => row,
+                Ok(None) => return None,
+                Err(e) => return Some(Err(StorageError::from(e))),
             };
 
             let id_blob: Vec<u8> = row.get(0);
@@ -422,22 +428,24 @@ impl UnitsStorageIterator for SqliteStorageIterator {
             // Convert token type
             let token_type = match SqliteStorage::int_to_token_type(token_type_int) {
                 Ok(tt) => tt,
-                Err(_) => TokenType::Native, // Default to Native if invalid
+                Err(e) => return Some(Err(StorageError::Other(e))),
             };
 
             // Increment the index for the next call
             self.current_index += 1;
 
-            Some(TokenizedObject {
+            Some(Ok(TokenizedObject {
                 id: UnitsObjectId::new(id_array),
                 holder: UnitsObjectId::new(holder_array),
                 token_type,
                 token_manager: UnitsObjectId::new(token_manager_array),
                 data,
-            })
+            }))
         })
     }
 }
+
+impl UnitsStorageIterator for SqliteStorageIterator {}
 
 impl std::fmt::Debug for SqliteStorage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -476,7 +484,7 @@ mod tests {
 
         // Test set and get
         storage.set(&obj).unwrap();
-        let retrieved = storage.get(&id).unwrap();
+        let retrieved = storage.get(&id).unwrap().unwrap();
 
         assert_eq!(retrieved.id, obj.id);
         assert_eq!(retrieved.holder, obj.holder);
@@ -486,7 +494,7 @@ mod tests {
 
         // Test delete
         storage.delete(&id).unwrap();
-        assert!(storage.get(&id).is_none());
+        assert!(storage.get(&id).unwrap().is_none());
     }
 
     #[test]
@@ -517,7 +525,8 @@ mod tests {
         let mut iterator = storage.scan();
         let mut count = 0;
 
-        while let Some(_) = iterator.next() {
+        while let Some(result) = iterator.next() {
+            assert!(result.is_ok());
             count += 1;
         }
 
@@ -545,7 +554,7 @@ mod tests {
         storage.set(&obj).unwrap();
 
         // Generate a state proof
-        let proof = storage.generate_state_proof();
+        let proof = storage.generate_state_proof().unwrap();
         
         // With our lattice implementation, this might still be empty if we have no objects
         // so let's add this check conditionally:

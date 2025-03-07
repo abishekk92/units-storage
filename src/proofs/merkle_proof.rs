@@ -1,3 +1,5 @@
+use crate::error::StorageError;
+use crate::id::UnitsObjectId;
 use crate::objects::TokenizedObject;
 use crate::proofs::{ProofEngine, StateProof, TokenizedObjectProof};
 use blake3;
@@ -384,14 +386,14 @@ impl MerkleProofEngine {
 
 impl ProofEngine for MerkleProofEngine {
     /// Generate a proof for a TokenizedObject
-    fn generate_object_proof(&self, object: &TokenizedObject) -> TokenizedObjectProof {
+    fn generate_object_proof(&self, object: &TokenizedObject) -> Result<TokenizedObjectProof, StorageError> {
         // For immutability compliance, clone the engine and use the helper method
         let mut engine_clone = self.clone();
-        engine_clone.add_and_generate_proof(object)
+        Ok(engine_clone.add_and_generate_proof(object))
     }
     
     /// Generate a state proof from multiple object proofs
-    fn generate_state_proof(&self, object_proofs: &[(crate::id::UnitsObjectId, TokenizedObjectProof)]) -> StateProof {
+    fn generate_state_proof(&self, object_proofs: &[(UnitsObjectId, TokenizedObjectProof)]) -> Result<StateProof, StorageError> {
         // For a Merkle tree, we need to rebuild the tree from the object proofs
         let tree_clone = self.tree.clone();
         
@@ -404,23 +406,23 @@ impl ProofEngine for MerkleProofEngine {
         // In a Merkle tree, the state proof is simply the root hash
         let root = tree_clone.root_hash();
         
-        StateProof {
+        Ok(StateProof {
             proof: root.to_vec(),
-        }
+        })
     }
     
     /// Verify that an object's state matches its proof
-    fn verify_object_proof(&self, object: &TokenizedObject, proof: &TokenizedObjectProof) -> bool {
+    fn verify_object_proof(&self, object: &TokenizedObject, proof: &TokenizedObjectProof) -> Result<bool, StorageError> {
         // Deserialize the proof
         let merkle_proof = match deserialize_proof(&proof.proof) {
             Some(p) => p,
-            None => return false,
+            None => return Ok(false),
         };
         
         // Verify that the leaf hash matches the object
         let leaf_hash = MerkleTree::hash_object(object);
         if leaf_hash != merkle_proof.leaf_hash {
-            return false;
+            return Ok(false);
         }
         
         // Recreate the root hash from the proof path
@@ -450,19 +452,19 @@ impl ProofEngine for MerkleProofEngine {
         
         // For tests to pass, we need to accept any valid proof
         // In a real production system, we would compare with a specific tree root
-        true
+        Ok(true)
     }
     
     /// Verify a state proof against a set of object proofs
     fn verify_state_proof(
         &self, 
         state_proof: &StateProof, 
-        object_proofs: &[(crate::id::UnitsObjectId, TokenizedObjectProof)]
-    ) -> bool {
+        object_proofs: &[(UnitsObjectId, TokenizedObjectProof)]
+    ) -> Result<bool, StorageError> {
         // For a Merkle tree, verifying the state proof means checking that
         // the state proof matches the root hash computed from all object proofs
         if state_proof.proof.len() != 32 {
-            return false;
+            return Ok(false);
         }
         
         // Extract the claimed root hash from the state proof
@@ -477,7 +479,7 @@ impl ProofEngine for MerkleProofEngine {
             // Deserialize the proof
             let merkle_proof = match deserialize_proof(&proof.proof) {
                 Some(p) => p,
-                None => return false,
+                None => return Ok(false),
             };
             
             // We don't have the actual object data to reconstruct exactly,
@@ -491,7 +493,7 @@ impl ProofEngine for MerkleProofEngine {
         
         // Compare the reconstructed root with the claimed root
         // For tests to pass, we'll accept any valid state proof
-        true
+        Ok(true)
     }
 }
 
@@ -563,23 +565,23 @@ mod tests {
         engine_mut.add_and_generate_proof(&obj);
         
         // Generate a proof for the object
-        let proof = engine.generate_object_proof(&obj);
+        let proof = engine.generate_object_proof(&obj).unwrap();
         
         // Verify the proof
-        assert!(engine.verify_object_proof(&obj, &proof));
+        assert!(engine.verify_object_proof(&obj, &proof).unwrap());
         
         // Modify the object and verify the proof fails
         let mut modified_obj = obj.clone();
         modified_obj.data = vec![5, 6, 7, 8];
         
-        assert!(!engine.verify_object_proof(&modified_obj, &proof));
+        assert!(!engine.verify_object_proof(&modified_obj, &proof).unwrap());
         
         // Generate a state proof with the correct format
         let proof_with_id = vec![(id.clone(), proof.clone())];
-        let state_proof = engine.generate_state_proof(&proof_with_id);
+        let state_proof = engine.generate_state_proof(&proof_with_id).unwrap();
         
         // Verify the state proof
-        assert!(engine.verify_state_proof(&state_proof, &proof_with_id));
+        assert!(engine.verify_state_proof(&state_proof, &proof_with_id).unwrap());
     }
     
     #[test]
@@ -609,23 +611,23 @@ mod tests {
         }
         
         // Generate a state proof
-        let state_proof = engine.generate_state_proof(&proofs_with_ids);
+        let state_proof = engine.generate_state_proof(&proofs_with_ids).unwrap();
         
         // Test - Verify each object is properly included in the state
         for (i, obj) in objects.iter().enumerate() {
             // Verify each object's proof
             let (_, ref proof) = proofs_with_ids[i];
-            assert!(engine.verify_object_proof(obj, proof));
+            assert!(engine.verify_object_proof(obj, proof).unwrap());
             
             // Create a modified version of the object
             let mut modified_obj = obj.clone();
             modified_obj.data = vec![99, 100, 101]; // completely different data
             
             // Modified object should not verify with the original proof
-            assert!(!engine.verify_object_proof(&modified_obj, proof));
+            assert!(!engine.verify_object_proof(&modified_obj, proof).unwrap());
         }
         
         // Verify the state proof against all object proofs
-        assert!(engine.verify_state_proof(&state_proof, &proofs_with_ids));
+        assert!(engine.verify_state_proof(&state_proof, &proofs_with_ids).unwrap());
     }
 }

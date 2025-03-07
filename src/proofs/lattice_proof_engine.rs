@@ -1,3 +1,4 @@
+use crate::error::StorageError;
 use crate::id::UnitsObjectId;
 use crate::objects::TokenizedObject;
 use crate::proofs::{
@@ -28,19 +29,26 @@ impl LatticeProofEngine {
 }
 
 impl ProofEngine for LatticeProofEngine {
-    fn generate_object_proof(&self, object: &TokenizedObject) -> TokenizedObjectProof {
+    fn generate_object_proof(&self, object: &TokenizedObject) -> Result<TokenizedObjectProof, StorageError> {
         // Hash the object and create a proof
         let hash = self.hasher.hash(object);
         let proof = self.hasher.create_proof(&hash);
         
-        TokenizedObjectProof { proof }
+        Ok(TokenizedObjectProof { proof })
     }
     
-    fn verify_object_proof(&self, object: &TokenizedObject, proof: &TokenizedObjectProof) -> bool {
-        self.hasher.verify(object, &proof.proof)
+    fn verify_object_proof(
+        &self, 
+        object: &TokenizedObject, 
+        proof: &TokenizedObjectProof
+    ) -> Result<bool, StorageError> {
+        Ok(self.hasher.verify(object, &proof.proof))
     }
     
-    fn generate_state_proof(&self, object_proofs: &[(UnitsObjectId, TokenizedObjectProof)]) -> StateProof {
+    fn generate_state_proof(
+        &self, 
+        object_proofs: &[(UnitsObjectId, TokenizedObjectProof)]
+    ) -> Result<StateProof, StorageError> {
         // Extract just the proofs
         let proofs: Vec<&Vec<u8>> = object_proofs
             .iter()
@@ -49,9 +57,9 @@ impl ProofEngine for LatticeProofEngine {
         
         // If there are no proofs, return an empty state proof
         if proofs.is_empty() {
-            return StateProof {
+            return Ok(StateProof {
                 proof: Vec::new(),
-            };
+            });
         }
         
         // Start with the first hash
@@ -65,9 +73,9 @@ impl ProofEngine for LatticeProofEngine {
                 let start = i * 8;
                 if start + 8 > first_proof.len() {
                     // Invalid proof length
-                    return StateProof {
+                    return Ok(StateProof {
                         proof: Vec::new(),
-                    };
+                    });
                 }
                 
                 let mut bytes = [0u8; 8];
@@ -104,21 +112,21 @@ impl ProofEngine for LatticeProofEngine {
             state_proof.extend_from_slice(&value.to_le_bytes());
         }
         
-        StateProof {
+        Ok(StateProof {
             proof: state_proof,
-        }
+        })
     }
     
     fn verify_state_proof(
         &self,
         state_proof: &StateProof,
         object_proofs: &[(UnitsObjectId, TokenizedObjectProof)],
-    ) -> bool {
+    ) -> Result<bool, StorageError> {
         // Generate the expected state proof
-        let expected_proof = self.generate_state_proof(object_proofs);
+        let expected_proof = self.generate_state_proof(object_proofs)?;
         
         // Compare the proofs
-        state_proof.proof == expected_proof.proof
+        Ok(state_proof.proof == expected_proof.proof)
     }
 }
 
@@ -153,16 +161,16 @@ mod tests {
         let engine = LatticeProofEngine::new();
         
         // Generate a proof
-        let proof = engine.generate_object_proof(&obj);
+        let proof = engine.generate_object_proof(&obj).unwrap();
         
         // Verify the proof
-        assert!(engine.verify_object_proof(&obj, &proof));
+        assert!(engine.verify_object_proof(&obj, &proof).unwrap());
         
         // Modify the object and verify the proof fails
         let mut modified_obj = obj.clone();
         modified_obj.data = vec![5, 6, 7, 8];
         
-        assert!(!engine.verify_object_proof(&modified_obj, &proof));
+        assert!(!engine.verify_object_proof(&modified_obj, &proof).unwrap());
     }
     
     #[test]
@@ -188,22 +196,22 @@ mod tests {
         let engine = LatticeProofEngine::new();
         
         // Generate proofs for each object
-        let proof1 = engine.generate_object_proof(&obj1);
-        let proof2 = engine.generate_object_proof(&obj2);
+        let proof1 = engine.generate_object_proof(&obj1).unwrap();
+        let proof2 = engine.generate_object_proof(&obj2).unwrap();
         
         // Create a collection of object proofs
         let object_proofs = vec![(obj1.id, proof1), (obj2.id, proof2)];
         
         // Generate a state proof
-        let state_proof = engine.generate_state_proof(&object_proofs);
+        let state_proof = engine.generate_state_proof(&object_proofs).unwrap();
         
         // Verify the state proof
-        assert!(engine.verify_state_proof(&state_proof, &object_proofs));
+        assert!(engine.verify_state_proof(&state_proof, &object_proofs).unwrap());
         
         // Modify the object collection and verify the state proof fails
         let mut modified_proofs = object_proofs.clone();
         modified_proofs.pop(); // Remove one of the proofs
         
-        assert!(!engine.verify_state_proof(&state_proof, &modified_proofs));
+        assert!(!engine.verify_state_proof(&state_proof, &modified_proofs).unwrap());
     }
 }
