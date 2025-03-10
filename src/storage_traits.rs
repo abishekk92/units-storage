@@ -29,6 +29,9 @@ pub struct WALEntry {
     
     /// Timestamp of when this update was recorded
     pub timestamp: u64,
+    
+    /// Hash of the transaction that led to this update, if any
+    pub transaction_hash: Option<[u8; 32]>,
 }
 
 /// Write-ahead log for durably recording all updates before they're committed to storage
@@ -47,13 +50,15 @@ pub trait UnitsWriteAheadLog {
     /// # Parameters
     /// * `object` - The object being updated
     /// * `proof` - The proof for this update
+    /// * `transaction_hash` - Hash of the transaction that led to this update, if any
     ///
     /// # Returns
     /// Ok(()) if successful, Err otherwise
     fn record_update(
         &self, 
         object: &TokenizedObject, 
-        proof: &TokenizedObjectProof
+        proof: &TokenizedObjectProof,
+        transaction_hash: Option<[u8; 32]>
     ) -> Result<(), StorageError>;
     
     /// Record a state proof in the write-ahead log
@@ -193,10 +198,15 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
     ///
     /// # Parameters
     /// * `object` - The tokenized object to store
+    /// * `transaction_hash` - Hash of the transaction that led to this update, if any
     ///
     /// # Returns
     /// The generated proof for this update
-    fn set(&self, object: &TokenizedObject) -> Result<TokenizedObjectProof, StorageError>;
+    fn set(
+        &self, 
+        object: &TokenizedObject,
+        transaction_hash: Option<[u8; 32]>
+    ) -> Result<TokenizedObjectProof, StorageError>;
 
     /// Create an iterator to scan through all objects
     ///
@@ -208,10 +218,15 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
     ///
     /// # Parameters
     /// * `id` - The ID of the object to delete
+    /// * `transaction_hash` - Hash of the transaction that led to this deletion, if any
     ///
     /// # Returns
     /// The generated proof for this deletion
-    fn delete(&self, id: &UnitsObjectId) -> Result<TokenizedObjectProof, StorageError>;
+    fn delete(
+        &self, 
+        id: &UnitsObjectId,
+        transaction_hash: Option<[u8; 32]>
+    ) -> Result<TokenizedObjectProof, StorageError>;
     
     /// Generate a state proof for the current slot and store it
     ///

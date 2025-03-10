@@ -20,6 +20,7 @@ pub trait ProofEngine {
     /// # Parameters
     /// * `object` - The tokenized object to generate a proof for
     /// * `prev_proof` - The previous proof for this object, if any
+    /// * `transaction_hash` - Hash of the transaction that led to this state change, if any
     /// 
     /// # Returns
     /// A cryptographic proof that commits to the object's current state
@@ -27,7 +28,8 @@ pub trait ProofEngine {
     fn generate_object_proof(
         &self, 
         object: &TokenizedObject,
-        prev_proof: Option<&TokenizedObjectProof>
+        prev_proof: Option<&TokenizedObjectProof>,
+        transaction_hash: Option<[u8; 32]>
     ) -> Result<TokenizedObjectProof, StorageError>;
     
     /// Verify that a proof correctly commits to an object's state

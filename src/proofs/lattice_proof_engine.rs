@@ -2,7 +2,6 @@ use crate::error::StorageError;
 use crate::id::UnitsObjectId;
 use crate::objects::TokenizedObject;
 use crate::proofs::{
-    current_slot,
     engine::ProofEngine,
     lattice_hash::{LatticeHash, LatticeHashParams},
     StateProof, TokenizedObjectProof,
@@ -33,14 +32,16 @@ impl ProofEngine for LatticeProofEngine {
     fn generate_object_proof(
         &self, 
         object: &TokenizedObject,
-        prev_proof: Option<&TokenizedObjectProof>
+        prev_proof: Option<&TokenizedObjectProof>,
+        transaction_hash: Option<[u8; 32]>
     ) -> Result<TokenizedObjectProof, StorageError> {
         // Hash the object and create a proof
         let hash = self.hasher.hash(object);
         let proof_data = self.hasher.create_proof(&hash);
         
         // Create the proof with the previous hash if available
-        let proof = TokenizedObjectProof::new(proof_data, prev_proof);
+        // and include the transaction hash that led to this state change
+        let proof = TokenizedObjectProof::new(proof_data, prev_proof, transaction_hash);
         
         Ok(proof)
     }
@@ -255,7 +256,7 @@ mod tests {
         let engine = LatticeProofEngine::new();
         
         // Generate a proof
-        let proof = engine.generate_object_proof(&obj, None).unwrap();
+        let proof = engine.generate_object_proof(&obj, None, None).unwrap();
         
         // Verify the proof
         assert!(engine.verify_object_proof(&obj, &proof).unwrap());
@@ -269,6 +270,7 @@ mod tests {
     
     #[test]
     fn test_state_proof_generation() {
+        use crate::proofs::current_slot;
         // Create multiple test objects
         let obj1 = TokenizedObject {
             id: unique_id(),
@@ -290,8 +292,8 @@ mod tests {
         let engine = LatticeProofEngine::new();
         
         // Generate proofs for each object
-        let proof1 = engine.generate_object_proof(&obj1, None).unwrap();
-        let proof2 = engine.generate_object_proof(&obj2, None).unwrap();
+        let proof1 = engine.generate_object_proof(&obj1, None, None).unwrap();
+        let proof2 = engine.generate_object_proof(&obj2, None, None).unwrap();
         
         // Create a collection of object proofs
         let object_proofs = vec![(obj1.id, proof1), (obj2.id, proof2)];

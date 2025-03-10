@@ -49,11 +49,19 @@ pub struct TokenizedObjectProof {
     /// Hash of the previous proof for this object, if any
     /// This forms a hash chain of state transitions
     pub prev_proof_hash: Option<[u8; 32]>,
+    
+    /// Hash of the transaction that created this proof
+    /// This enables tracking which transaction led to a state change
+    pub transaction_hash: Option<[u8; 32]>,
 }
 
 impl TokenizedObjectProof {
-    /// Create a new object proof with the given proof data and previous proof hash
-    pub fn new(proof: Vec<u8>, prev_proof: Option<&TokenizedObjectProof>) -> Self {
+    /// Create a new object proof with the given proof data, previous proof, and transaction hash
+    pub fn new(
+        proof: Vec<u8>, 
+        prev_proof: Option<&TokenizedObjectProof>,
+        transaction_hash: Option<[u8; 32]>
+    ) -> Self {
         // Calculate the hash of the previous proof if it exists
         let prev_proof_hash = prev_proof.map(|p| {
             // Use blake3 for consistency with our other hashing
@@ -63,6 +71,9 @@ impl TokenizedObjectProof {
                 hasher.update(hash);
             }
             hasher.update(&p.slot.to_le_bytes());
+            if let Some(hash) = &p.transaction_hash {
+                hasher.update(hash);
+            }
             *hasher.finalize().as_bytes()
         });
         
@@ -70,6 +81,7 @@ impl TokenizedObjectProof {
             proof,
             slot: current_slot(),
             prev_proof_hash,
+            transaction_hash,
         }
     }
     
@@ -81,6 +93,9 @@ impl TokenizedObjectProof {
             hasher.update(hash);
         }
         hasher.update(&self.slot.to_le_bytes());
+        if let Some(hash) = &self.transaction_hash {
+            hasher.update(hash);
+        }
         *hasher.finalize().as_bytes()
     }
 }

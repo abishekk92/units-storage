@@ -78,7 +78,8 @@ impl UnitsWriteAheadLog for FileWriteAheadLog {
     fn record_update(
         &self, 
         object: &TokenizedObject, 
-        proof: &TokenizedObjectProof
+        proof: &TokenizedObjectProof,
+        transaction_hash: Option<[u8; 32]>
     ) -> Result<(), StorageError> {
         let mut file_guard = self.file.lock().map_err(|e| {
             StorageError::WAL(format!("Failed to acquire lock: {}", e))
@@ -94,6 +95,7 @@ impl UnitsWriteAheadLog for FileWriteAheadLog {
             slot: proof.slot,
             proof: proof.clone(),
             timestamp: Self::current_timestamp(),
+            transaction_hash,
         };
         
         // Serialize the entry
@@ -229,6 +231,7 @@ mod tests {
             proof: vec![5, 6, 7, 8],
             slot: current_slot(),
             prev_proof_hash: None,
+            transaction_hash: None,
         }
     }
     
@@ -260,8 +263,8 @@ mod tests {
         let proof2 = create_test_proof();
         
         // Record updates
-        wal.record_update(&obj1, &proof1).unwrap();
-        wal.record_update(&obj2, &proof2).unwrap();
+        wal.record_update(&obj1, &proof1, None).unwrap();
+        wal.record_update(&obj2, &proof2, None).unwrap();
         
         // Iterate over the entries
         let entries: Vec<_> = wal.iterate_entries().collect::<Result<Vec<_>, _>>().unwrap();
@@ -288,7 +291,7 @@ mod tests {
         let state_proof = create_test_state_proof();
         
         // Record updates
-        wal.record_update(&obj, &proof).unwrap();
+        wal.record_update(&obj, &proof, None).unwrap();
         wal.record_state_proof(&state_proof).unwrap();
         
         // Iterate over the entries

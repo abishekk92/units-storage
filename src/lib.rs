@@ -4,6 +4,7 @@ pub mod error;
 pub mod id;
 pub mod objects;
 pub mod proofs;
+pub mod runtime;
 pub mod storage;
 pub mod storage_traits;
 
@@ -12,6 +13,15 @@ pub use error::StorageError;
 pub use id::UnitsObjectId;
 pub use objects::{TokenType, TokenizedObject};
 pub use proofs::{ProofEngine, StateProof, TokenizedObjectProof, SlotNumber};
+pub use runtime::{
+    AccessIntent,
+    Instruction,
+    Transaction,
+    TransactionHash,
+    TransactionResult,
+    Runtime,
+    MockRuntime
+};
 pub use storage_traits::{
     UnitsStorage, 
     UnitsStorageIterator, 

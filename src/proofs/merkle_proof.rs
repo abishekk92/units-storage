@@ -1,7 +1,7 @@
 use crate::error::StorageError;
 use crate::id::UnitsObjectId;
 use crate::objects::TokenizedObject;
-use crate::proofs::{current_slot, ProofEngine, StateProof, TokenizedObjectProof};
+use crate::proofs::{ProofEngine, StateProof, TokenizedObjectProof};
 use blake3;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Debug;
@@ -372,7 +372,11 @@ impl MerkleProofEngine {
 
 impl MerkleProofEngine {
     /// Helper method to add an object to the tree and generate a proof
-    fn add_and_generate_proof(&mut self, object: &TokenizedObject) -> TokenizedObjectProof {
+    fn add_and_generate_proof(
+        &mut self, 
+        object: &TokenizedObject,
+        transaction_hash: Option<[u8; 32]>
+    ) -> TokenizedObjectProof {
         // Add the object to the tree (or update it if it already exists)
         self.tree.insert(object);
 
@@ -385,7 +389,7 @@ impl MerkleProofEngine {
         // Serialize the proof
         let serialized = serialize_proof(&proof);
 
-        TokenizedObjectProof::new(serialized, None)
+        TokenizedObjectProof::new(serialized, None, transaction_hash)
     }
 }
 
@@ -394,14 +398,15 @@ impl ProofEngine for MerkleProofEngine {
     fn generate_object_proof(
         &self,
         object: &TokenizedObject,
-        prev_proof: Option<&TokenizedObjectProof>
+        prev_proof: Option<&TokenizedObjectProof>,
+        transaction_hash: Option<[u8; 32]>
     ) -> Result<TokenizedObjectProof, StorageError> {
         // For immutability compliance, clone the engine and use the helper method
         let mut engine_clone = self.clone();
-        let proof_data = engine_clone.add_and_generate_proof(object).proof;
+        let proof_data = engine_clone.add_and_generate_proof(object, transaction_hash).proof;
         
-        // Create a new proof that links to the previous state
-        let proof = TokenizedObjectProof::new(proof_data, prev_proof);
+        // Create a new proof that links to the previous state and includes transaction hash
+        let proof = TokenizedObjectProof::new(proof_data, prev_proof, transaction_hash);
         
         Ok(proof)
     }
@@ -631,6 +636,7 @@ mod tests {
 
     #[test]
     fn test_merkle_proof_engine() {
+        use crate::proofs::current_slot;
         // Create a test object
         let id = unique_id();
         let holder = unique_id();
@@ -648,10 +654,10 @@ mod tests {
 
         // Add the object to the tree manually first (in tests we can access add_and_generate_proof)
         let mut engine_mut = engine.clone();
-        engine_mut.add_and_generate_proof(&obj);
+        engine_mut.add_and_generate_proof(&obj, None);
 
         // Generate a proof for the object
-        let proof = engine.generate_object_proof(&obj, None).unwrap();
+        let proof = engine.generate_object_proof(&obj, None, None).unwrap();
 
         // Verify the proof
         assert!(engine.verify_object_proof(&obj, &proof).unwrap());
@@ -674,6 +680,7 @@ mod tests {
 
     #[test]
     fn test_object_inclusion_in_merkle_proof() {
+        use crate::proofs::current_slot;
         // Create multiple test objects
         let mut objects = Vec::new();
         let mut proofs_with_ids = Vec::new();
@@ -692,7 +699,7 @@ mod tests {
             };
 
             // Add objects to the tree
-            let proof = engine_mut.add_and_generate_proof(&obj);
+            let proof = engine_mut.add_and_generate_proof(&obj, None);
 
             objects.push(obj);
             proofs_with_ids.push((id, proof));

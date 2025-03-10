@@ -331,9 +331,10 @@ impl UnitsWriteAheadLog for RocksDbStorage {
     fn record_update(
         &self, 
         object: &TokenizedObject, 
-        proof: &TokenizedObjectProof
+        proof: &TokenizedObjectProof,
+        transaction_hash: Option<[u8; 32]>
     ) -> Result<(), StorageError> {
-        self.wal.record_update(object, proof)
+        self.wal.record_update(object, proof, transaction_hash)
     }
     
     fn record_state_proof(&self, state_proof: &StateProof) -> Result<(), StorageError> {
@@ -403,7 +404,11 @@ impl UnitsStorage for RocksDbStorage {
         }
     }
 
-    fn set(&self, object: &TokenizedObject) -> Result<TokenizedObjectProof, StorageError> {
+    fn set(
+        &self, 
+        object: &TokenizedObject,
+        transaction_hash: Option<[u8; 32]>
+    ) -> Result<TokenizedObjectProof, StorageError> {
         let cf_objects = match self.db.cf_handle(CF_OBJECTS) {
             Some(cf) => cf,
             None => {
@@ -426,7 +431,8 @@ impl UnitsStorage for RocksDbStorage {
         let prev_proof = self.get_proof(&object.id)?;
         
         // Generate proof for the object, linking to previous proof if it exists
-        let proof = self.proof_engine.generate_object_proof(object, prev_proof.as_ref())?;
+        // and including the transaction hash that led to this state change
+        let proof = self.proof_engine.generate_object_proof(object, prev_proof.as_ref(), transaction_hash)?;
         
         // Serialize the object and proof
         let serialized_object = bincode::serialize(object)
@@ -449,12 +455,16 @@ impl UnitsStorage for RocksDbStorage {
             .with_context(|| format!("Failed to store proof for object ID: {:?}", object.id))?;
             
         // Record the update in the write-ahead log
-        self.record_update(object, &proof)?;
+        self.record_update(object, &proof, transaction_hash)?;
 
         Ok(proof)
     }
 
-    fn delete(&self, id: &UnitsObjectId) -> Result<TokenizedObjectProof, StorageError> {
+    fn delete(
+        &self, 
+        id: &UnitsObjectId,
+        transaction_hash: Option<[u8; 32]>
+    ) -> Result<TokenizedObjectProof, StorageError> {
         // First, check if the object exists
         let object = match self.get(id)? {
             Some(obj) => obj,
@@ -488,14 +498,14 @@ impl UnitsStorage for RocksDbStorage {
         let mut tombstone = object.clone();
         tombstone.data = Vec::new(); // Empty data to indicate deletion
         
-        // Generate a proof for the deletion
-        let proof = self.proof_engine.generate_object_proof(&tombstone, prev_proof.as_ref())?;
+        // Generate a proof for the deletion, including the transaction hash
+        let proof = self.proof_engine.generate_object_proof(&tombstone, prev_proof.as_ref(), transaction_hash)?;
         
         // Store the deletion proof with history
         self.store_proof_with_history(id, &proof)?;
         
         // Record the deletion in the write-ahead log
-        self.record_update(&tombstone, &proof)?;
+        self.record_update(&tombstone, &proof, transaction_hash)?;
         
         // Delete the object and its current proof
         self.db
@@ -649,7 +659,7 @@ impl UnitsStorageProofEngine for RocksDbStorage {
                 match self.get(id)? {
                     Some(object) => {
                         // No previous proof since we're generating a new one
-                        let proof = self.proof_engine.generate_object_proof(&object, None)?;
+                        let proof = self.proof_engine.generate_object_proof(&object, None, None)?;
 
                         // Store the proof for future use
                         let serialized_proof = bincode::serialize(&proof).with_context(|| {
@@ -947,7 +957,7 @@ mod tests {
         };
 
         // Test set and get
-        storage.set(&obj).unwrap();
+        storage.set(&obj, None).unwrap();
         let retrieved = storage.get(&id).unwrap();
 
         // Verify the retrieved object is the same as the one we set
@@ -960,7 +970,7 @@ mod tests {
         assert_eq!(retrieved.data, obj.data);
 
         // Test delete
-        storage.delete(&id).unwrap();
+        storage.delete(&id, None).unwrap();
 
         // Verify the object is deleted
         let deleted = storage.get(&id).unwrap();
@@ -995,8 +1005,8 @@ mod tests {
         };
 
         // Store the objects
-        storage.set(&obj1).unwrap();
-        storage.set(&obj2).unwrap();
+        storage.set(&obj1, None).unwrap();
+        storage.set(&obj2, None).unwrap();
 
         // Get proofs for the objects
         let proof1 = storage.get_proof(&obj1.id).unwrap();
@@ -1044,7 +1054,7 @@ mod tests {
                 data: vec![i as u8; 4],
             };
             objects.push(obj.clone());
-            storage.set(&obj).unwrap();
+            storage.set(&obj, None).unwrap();
         }
 
         // Test iterator
