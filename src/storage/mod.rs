@@ -14,11 +14,10 @@ mod wal;
 pub use wal::FileWriteAheadLog;
 
 // Export implementations
-// SQLite implementation needs to be updated to match the new interfaces
-// #[cfg(feature = "sqlite")]
-// mod sqlite;
-// #[cfg(feature = "sqlite")]
-// pub use sqlite::{SqliteStorage, SqliteStorageIterator};
+#[cfg(feature = "sqlite")]
+mod sqlite;
+#[cfg(feature = "sqlite")]
+pub use sqlite::{SqliteStorage, SqliteStorageIterator};
 
 #[cfg(feature = "rocksdb")]
 mod rocksdb;

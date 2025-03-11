@@ -9,6 +9,17 @@ use crate::storage_traits::{TransactionReceiptStorage, UnitsReceiptIterator};
 /// A transaction hash uniquely identifies a transaction in the system
 pub type TransactionHash = [u8; 32];
 
+/// The result of a transaction conflict check
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConflictResult {
+    /// No conflicts detected, transaction can proceed
+    NoConflict,
+    /// Conflicts detected with these transaction hashes
+    Conflict(Vec<TransactionHash>),
+    /// Read-only transaction, no conflict possible
+    ReadOnly,
+}
+
 /// The access intent for an instruction on a TokenizedObject
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AccessIntent {
@@ -110,8 +121,74 @@ impl TransactionReceipt {
 
 /// Runtime for executing transactions that modify TokenizedObjects
 pub trait Runtime {
+    /// Check for potential conflicts with pending or recent transactions
+    ///
+    /// This allows detecting conflicts before executing a transaction.
+    /// Implementations can use various strategies to detect conflicts.
+    ///
+    /// # Parameters
+    /// * `transaction` - The transaction to check for conflicts
+    ///
+    /// # Returns
+    /// A ConflictResult indicating whether conflicts were detected
+    fn check_conflicts(&self, transaction: &Transaction) -> Result<ConflictResult, String> {
+        // Default implementation checks if transaction is read-only
+        if transaction.instructions.iter().all(|i| {
+            i.object_intents.iter().all(|(_, intent)| *intent == AccessIntent::Read)
+        }) {
+            return Ok(ConflictResult::ReadOnly);
+        }
+        
+        // By default, assume no conflicts if all objects are being read
+        Ok(ConflictResult::NoConflict)
+    }
+    
     /// Execute a transaction and return a transaction receipt with proofs
     fn execute_transaction(&self, transaction: Transaction) -> TransactionReceipt;
+    
+    /// Try to execute a transaction with conflict checking
+    ///
+    /// This method first checks for conflicts and only executes the transaction
+    /// if no conflicts are detected.
+    ///
+    /// # Parameters
+    /// * `transaction` - The transaction to execute
+    ///
+    /// # Returns
+    /// Either a receipt or a conflict error
+    fn try_execute_transaction(&self, transaction: Transaction) 
+        -> Result<TransactionReceipt, ConflictResult> 
+    {
+        // Check for conflicts
+        match self.check_conflicts(&transaction) {
+            Ok(ConflictResult::NoConflict) | Ok(ConflictResult::ReadOnly) => {
+                // No conflicts, execute the transaction
+                Ok(self.execute_transaction(transaction))
+            },
+            Ok(conflict) => {
+                // Conflicts detected, return them
+                Err(conflict)
+            },
+            Err(_) => {
+                // Error checking conflicts, use a default error
+                Err(ConflictResult::Conflict(vec![]))
+            }
+        }
+    }
+    
+    /// Rollback a previously executed transaction
+    ///
+    /// # Parameters
+    /// * `transaction_hash` - The hash of the transaction to rollback
+    ///
+    /// # Returns
+    /// A receipt for the rollback transaction if successful
+    fn rollback_transaction(&self, _transaction_hash: &TransactionHash) 
+        -> Result<TransactionReceipt, String>
+    {
+        // Default implementation returns an error since not all runtimes support rollback
+        Err("Transaction rollback not supported by this runtime".to_string())
+    }
     
     /// Get a transaction by its hash
     fn get_transaction(&self, hash: &TransactionHash) -> Option<Transaction>;
@@ -166,6 +243,58 @@ impl MockRuntime {
 }
 
 impl Runtime for MockRuntime {
+    fn check_conflicts(&self, transaction: &Transaction) -> Result<ConflictResult, String> {
+        // For the mock, we'll implement a simple conflict detection mechanism
+        // that checks if any objects with write intents have been modified in recent transactions
+        
+        // Extract object IDs with write intent from this transaction
+        let mut write_objects = HashSet::new();
+        for instruction in &transaction.instructions {
+            for (obj_id, intent) in &instruction.object_intents {
+                if *intent == AccessIntent::Write {
+                    write_objects.insert(*obj_id);
+                }
+            }
+        }
+        
+        // If it's a read-only transaction, no conflicts are possible
+        if write_objects.is_empty() {
+            return Ok(ConflictResult::ReadOnly);
+        }
+        
+        // Check for conflicts with recent transactions
+        let mut conflicts = Vec::new();
+        
+        // Check the last 10 transactions (arbitrary number for testing)
+        let recent_transactions: Vec<_> = self.transactions.values().cloned().collect();
+        
+        for other_tx in recent_transactions.iter().rev().take(10) {
+            // Skip checking against itself
+            if other_tx.hash == transaction.hash {
+                continue;
+            }
+            
+            // Check for overlapping write intents
+            for instruction in &other_tx.instructions {
+                for (obj_id, intent) in &instruction.object_intents {
+                    if *intent == AccessIntent::Write && write_objects.contains(obj_id) {
+                        conflicts.push(other_tx.hash);
+                        break;
+                    }
+                }
+                if conflicts.contains(&other_tx.hash) {
+                    break;
+                }
+            }
+        }
+        
+        if conflicts.is_empty() {
+            Ok(ConflictResult::NoConflict)
+        } else {
+            Ok(ConflictResult::Conflict(conflicts))
+        }
+    }
+    
     fn execute_transaction(&self, transaction: Transaction) -> TransactionReceipt {
         // In a mock implementation, we just pretend all transactions succeed
         let mut mock = self.clone();
@@ -189,6 +318,45 @@ impl Runtime for MockRuntime {
         mock.add_receipt(receipt.clone());
         
         receipt
+    }
+    
+    fn rollback_transaction(&self, transaction_hash: &TransactionHash) 
+        -> Result<TransactionReceipt, String> 
+    {
+        // Check if the transaction exists
+        let _transaction = match self.get_transaction(transaction_hash) {
+            Some(tx) => tx,
+            None => return Err("Transaction not found".to_string()),
+        };
+        
+        // Check if we have a receipt for this transaction
+        let _original_receipt = match self.get_transaction_receipt(transaction_hash) {
+            Some(receipt) => receipt,
+            None => return Err("Transaction receipt not found".to_string()),
+        };
+        
+        // Create a new "rollback" transaction
+        let mut rollback_hash = [0u8; 32];
+        rollback_hash.copy_from_slice(&[0xFF; 32]); // Placeholder rollback hash
+        
+        // In a real implementation, we would:
+        // 1. Look up the previous state of all affected objects
+        // 2. Create a transaction that reverts to the previous state
+        // 3. Execute that transaction
+        
+        // For the mock, just create a receipt indicating rollback
+        let rollback_receipt = TransactionReceipt::new(
+            rollback_hash,
+            self.current_slot,
+            true,
+            self.current_timestamp()
+        );
+        
+        // Add the rollback transaction and receipt
+        let mut mock = self.clone();
+        mock.add_receipt(rollback_receipt.clone());
+        
+        Ok(rollback_receipt)
     }
     
     fn get_transaction(&self, hash: &TransactionHash) -> Option<Transaction> {

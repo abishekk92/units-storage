@@ -240,6 +240,92 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
         id: &UnitsObjectId,
         slot: SlotNumber,
     ) -> Result<Option<TokenizedObject>, StorageError>;
+    
+    /// Get object state history between slots
+    ///
+    /// # Parameters
+    /// * `id` - The ID of the object to retrieve history for
+    /// * `start_slot` - The starting slot (inclusive)
+    /// * `end_slot` - The ending slot (inclusive)
+    ///
+    /// # Returns
+    /// A map of slot numbers to objects representing the state at each slot where changes occurred
+    fn get_history(
+        &self,
+        id: &UnitsObjectId,
+        start_slot: SlotNumber,
+        end_slot: SlotNumber,
+    ) -> Result<HashMap<SlotNumber, TokenizedObject>, StorageError> {
+        // Default implementation that uses get_proof_history and reconstructs objects
+        let mut history = HashMap::new();
+        
+        // Get all proofs for this object between the slots
+        let proofs: Vec<_> = self.get_proof_history(id)
+            .map(|r| r.unwrap())
+            .filter(|(slot, _)| *slot >= start_slot && *slot <= end_slot)
+            .collect();
+            
+        if proofs.is_empty() {
+            return Ok(history);
+        }
+        
+        // For each slot with a proof, reconstruct the object at that time
+        for (slot, _) in proofs {
+            if let Some(obj) = self.get_at_slot(id, slot)? {
+                history.insert(slot, obj);
+            }
+        }
+        
+        Ok(history)
+    }
+    
+    /// Get all transactions that affected an object
+    ///
+    /// # Parameters
+    /// * `id` - The ID of the object to get transaction history for
+    /// * `start_slot` - Optional starting slot for filtering (inclusive)
+    /// * `end_slot` - Optional ending slot for filtering (inclusive)
+    ///
+    /// # Returns
+    /// A vector of transaction hashes that affected this object, ordered by slot
+    fn get_transaction_history(
+        &self,
+        id: &UnitsObjectId,
+        start_slot: Option<SlotNumber>,
+        end_slot: Option<SlotNumber>,
+    ) -> Result<Vec<[u8; 32]>, StorageError> {
+        // Default implementation that uses get_proof_history
+        let mut transactions = Vec::new();
+        
+        // Get all proofs for this object
+        let proofs: Vec<_> = self.get_proof_history(id)
+            .map(|r| r.unwrap())
+            .filter(|(slot, _)| {
+                if let Some(start) = start_slot {
+                    if *slot < start {
+                        return false;
+                    }
+                }
+                if let Some(end) = end_slot {
+                    if *slot > end {
+                        return false;
+                    }
+                }
+                true
+            })
+            .collect();
+            
+        // Extract transaction hashes from proofs
+        for (_, proof) in proofs {
+            if let Some(hash) = proof.transaction_hash {
+                if !transactions.contains(&hash) {
+                    transactions.push(hash);
+                }
+            }
+        }
+        
+        Ok(transactions)
+    }
 
     /// Store an object
     ///
@@ -378,4 +464,41 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
     /// # Returns
     /// The generated state proof
     fn generate_and_store_state_proof(&self) -> Result<StateProof, StorageError>;
+    
+    /// Compact historical data up to a specific slot
+    ///
+    /// This operation reduces the storage footprint by pruning historical data
+    /// while maintaining the ability to verify the integrity of the current state.
+    ///
+    /// # Parameters
+    /// * `before_slot` - Compact history before this slot (exclusive)
+    /// * `preserve_state_proofs` - Whether to preserve state proofs during compaction
+    ///
+    /// # Returns
+    /// The number of objects compacted
+    fn compact_history(
+        &self,
+        _before_slot: SlotNumber,
+        _preserve_state_proofs: bool,
+    ) -> Result<usize, StorageError> {
+        // Default implementation that does nothing
+        // Storage backends should override this with an efficient implementation
+        Ok(0)
+    }
+    
+    /// Get storage statistics about history size
+    ///
+    /// # Returns
+    /// A map of statistics about the storage
+    fn get_history_stats(&self) -> Result<HashMap<String, u64>, StorageError> {
+        // Default implementation that returns empty stats
+        // Storage backends should override this with actual statistics
+        let mut stats = HashMap::new();
+        stats.insert("total_objects".to_string(), 0);
+        stats.insert("total_proofs".to_string(), 0);
+        stats.insert("total_state_proofs".to_string(), 0);
+        stats.insert("oldest_slot".to_string(), 0);
+        stats.insert("newest_slot".to_string(), 0);
+        Ok(stats)
+    }
 }

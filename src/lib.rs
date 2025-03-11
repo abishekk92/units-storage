@@ -7,6 +7,7 @@ pub mod proofs;
 pub mod runtime;
 pub mod storage;
 pub mod storage_traits;
+pub mod verification;
 
 // Re-export the main types for convenience
 pub use error::StorageError;
@@ -20,6 +21,7 @@ pub use runtime::{
     TransactionHash,
     TransactionResult,
     TransactionReceipt,
+    ConflictResult,
     Runtime,
     MockRuntime,
     InMemoryReceiptStorage,
@@ -35,6 +37,12 @@ pub use storage_traits::{
     UnitsReceiptIterator,
     TransactionReceiptStorage,
     WALEntry
+};
+pub use verification::{
+    VerificationResult,
+    ProofVerifier,
+    verify_transaction_included,
+    detect_double_spend
 };
 pub use storage::FileWriteAheadLog;
 
