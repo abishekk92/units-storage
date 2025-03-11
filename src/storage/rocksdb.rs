@@ -892,7 +892,6 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    #[ignore = "RocksDB implementation needs to be updated with new error types"]
     fn test_basic_storage_operations() {
         // Create temporary directory for test database
         let temp_dir = tempdir().unwrap();
@@ -935,7 +934,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "RocksDB implementation needs to be updated with new error types"]
     fn test_proof_operations() {
         // Create temporary directory for test database
         let temp_dir = tempdir().unwrap();
@@ -991,7 +989,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "RocksDB implementation needs to be updated with new error types"]
     fn test_storage_iterator() {
         // Create temporary directory for test database
         let temp_dir = tempdir().unwrap();
@@ -1034,5 +1031,73 @@ mod tests {
 
         // Verify we found all our objects
         assert_eq!(found_objects, objects.len());
+    }
+    
+    #[test]
+    fn test_proof_chain_verification() {
+        // Create temporary directory for test database
+        let temp_dir = tempdir().unwrap();
+        let db_path = temp_dir.path().join("test_proof_chain.db");
+
+        // Create storage
+        let storage = RocksDbStorage::new(&db_path).unwrap();
+
+        // Create a test object
+        let id = unique_id();
+        let holder = unique_id();
+        let token_manager = unique_id();
+        let mut obj = TokenizedObject {
+            id,
+            holder,
+            token_type: TokenType::Native,
+            token_manager,
+            data: vec![1, 2, 3, 4],
+        };
+
+        // Store the object initially - this will create the first proof
+        storage.set(&obj, None).unwrap();
+        
+        // Modify and store the object again to create a chain of proofs
+        obj.data = vec![5, 6, 7, 8];
+        storage.set(&obj, None).unwrap();
+        
+        // Modify and store once more
+        obj.data = vec![9, 10, 11, 12];
+        storage.set(&obj, None).unwrap();
+        
+        // Get the slot numbers from the proofs
+        let mut slots = Vec::new();
+        for result in storage.get_proof_history(&id) {
+            let (slot, _) = result.unwrap();
+            slots.push(slot);
+        }
+        
+        // Sort slots (should already be sorted, but to be safe)
+        slots.sort();
+        
+        // We should have at least 3 slots with proofs
+        assert!(slots.len() >= 3);
+        
+        // Verify the proof chain between first and last slot
+        let start_slot = slots[0];
+        let end_slot = slots[slots.len() - 1];
+        
+        // This should succeed since we have a valid chain
+        assert!(storage.verify_proof_chain(&id, start_slot, end_slot).unwrap());
+        
+        // Verify between first and second slot
+        if slots.len() >= 2 {
+            let second_slot = slots[1];
+            assert!(storage.verify_proof_chain(&id, start_slot, second_slot).unwrap());
+        }
+        
+        // Test with non-existent object ID
+        let nonexistent_id = unique_id();
+        let result = storage.verify_proof_chain(&nonexistent_id, start_slot, end_slot);
+        assert!(result.is_err());
+        match result {
+            Err(StorageError::ProofNotFound(_)) => {}, // Expected error
+            _ => panic!("Expected ProofNotFound error for non-existent object ID"),
+        }
     }
 }

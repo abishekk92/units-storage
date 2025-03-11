@@ -201,10 +201,17 @@ pub trait UnitsStorageProofEngine {
 
     /// Verify a proof chain for a specific object
     ///
+    /// Verifies that all proofs for an object between the given slots form a valid chain,
+    /// with each proof correctly linking to its predecessor through cryptographic hashes.
+    ///
     /// # Parameters
     /// * `id` - The ID of the object
     /// * `start_slot` - The starting slot for verification
     /// * `end_slot` - The ending slot for verification
+    ///
+    /// # Performance
+    /// This method is optimized for sequentially increasing slot numbers, using vectors
+    /// instead of hash maps for better performance.
     ///
     /// # Returns
     /// `true` if the proof chain is valid, `false` otherwise

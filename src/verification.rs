@@ -65,9 +65,16 @@ impl<'a> ProofVerifier<'a> {
     
     /// Verify a proof chain for an object
     ///
+    /// Verifies that a sequence of proofs forms a valid chain, with each proof correctly
+    /// linking to its predecessor through cryptographic hashes.
+    ///
     /// # Parameters
     /// * `object_states` - Vector of (slot, object state) pairs in ascending slot order
     /// * `proofs` - Vector of (slot, object proof) pairs in ascending slot order
+    ///
+    /// # Performance
+    /// This method is optimized for sequentially increasing slot numbers, using vectors
+    /// instead of hash maps for better performance.
     ///
     /// # Returns
     /// A VerificationResult indicating whether the proof chain is valid

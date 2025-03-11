@@ -12,6 +12,11 @@ use crate::verification::VerificationResult;
 /// 1. Data integrity - objects have not been tampered with
 /// 2. State consistency - the full state of all objects is valid
 /// 3. Verifiable history - changes to objects can be verified
+///
+/// # Note on Proof Chain Verification
+/// This trait provides two methods for proof chain verification:
+/// - `verify_proof_chain`: Verifies a single link in a chain between two adjacent proofs
+/// - `verify_proof_history`: Verifies an entire history of proofs for optimal performance
 pub trait ProofEngine {
     /// Generate a cryptographic proof for a tokenized object
     /// 
@@ -47,10 +52,11 @@ pub trait ProofEngine {
         proof: &TokenizedObjectProof
     ) -> Result<bool, StorageError>;
     
-    /// Verify the chain of proofs for an object
+    /// Verify two adjacent proofs in a chain
     /// 
-    /// This verifies that a sequence of proofs forms a valid chain,
-    /// with each proof correctly linking to its predecessor.
+    /// This verifies that two proofs form a valid chain link,
+    /// with the current proof correctly referencing its predecessor.
+    /// For verifying an entire chain of proofs, use `verify_proof_history` instead.
     ///
     /// # Parameters
     /// * `object` - The current tokenized object
@@ -58,7 +64,7 @@ pub trait ProofEngine {
     /// * `prev_proof` - The previous proof in the chain
     /// 
     /// # Returns
-    /// `true` if the chain is valid, `false` otherwise
+    /// `true` if the link between proofs is valid, `false` otherwise
     fn verify_proof_chain(
         &self,
         object: &TokenizedObject,
@@ -116,15 +122,21 @@ pub trait ProofEngine {
         prev_state_proof: &StateProof
     ) -> Result<bool, StorageError>;
     
-    /// Verify a proof history for an object
+    /// Verify an entire history of proofs for an object
     /// 
     /// This verifies a sequence of object states and their corresponding proofs,
-    /// ensuring that each proof is valid and they form a valid chain.
+    /// ensuring that each proof is valid and they form a valid chain. This is more
+    /// efficient than calling `verify_proof_chain` on each adjacent pair of proofs
+    /// because it can verify the entire chain at once.
     ///
     /// # Parameters
     /// * `object_states` - Vector of (slot, object state) pairs in ascending slot order
     /// * `proofs` - Vector of (slot, proof) pairs in ascending slot order
     /// 
+    /// # Performance
+    /// This method is optimized for sequentially increasing slot numbers, using vectors
+    /// instead of hash maps for better performance with large proof chains.
+    ///
     /// # Returns
     /// A VerificationResult indicating whether the proof chain is valid
     fn verify_proof_history(
