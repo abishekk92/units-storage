@@ -5,7 +5,7 @@ use std::ops::Deref;
 
 // UnitsObjectId uniquely identifies an instance of tokenized object.
 // It is a 32 byte long unique identifier, resembling a public key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct UnitsObjectId([u8; 32]);
 
 impl Default for UnitsObjectId {

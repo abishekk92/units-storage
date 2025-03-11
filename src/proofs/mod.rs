@@ -38,7 +38,7 @@ pub fn current_slot() -> SlotNumber {
 ///
 /// The proof now includes a reference to the previous state through its hash,
 /// forming a chain of state transitions that can be verified.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenizedObjectProof {
     /// The binary representation of the cryptographic proof
     pub proof: Vec<u8>,
@@ -105,7 +105,7 @@ impl TokenizedObjectProof {
 /// State proofs aggregate multiple TokenizedObjectProofs to provide a compact
 /// representation of the entire system state at a point in time. These are used
 /// to verify the collective state of all objects in the system.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StateProof {
     /// The binary representation of the state proof
     pub proof: Vec<u8>,

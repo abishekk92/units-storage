@@ -19,8 +19,11 @@ pub use runtime::{
     Transaction,
     TransactionHash,
     TransactionResult,
+    TransactionReceipt,
     Runtime,
-    MockRuntime
+    MockRuntime,
+    InMemoryReceiptStorage,
+    InMemoryReceiptIterator
 };
 pub use storage_traits::{
     UnitsStorage, 
@@ -29,6 +32,8 @@ pub use storage_traits::{
     UnitsWriteAheadLog,
     UnitsProofIterator,
     UnitsStateProofIterator,
+    UnitsReceiptIterator,
+    TransactionReceiptStorage,
     WALEntry
 };
 pub use storage::FileWriteAheadLog;
