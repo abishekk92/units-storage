@@ -1915,6 +1915,7 @@ dependencies = [
  "blake3",
  "chrono",
  "curve25519-dalek",
+ "log",
  "rocksdb",
  "serde",
  "sha2",

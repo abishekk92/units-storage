@@ -66,15 +66,15 @@ impl<'a> ProofVerifier<'a> {
     /// Verify a proof chain for an object
     ///
     /// # Parameters
-    /// * `object_states` - Map of slots to object states
-    /// * `proofs` - Map of slots to proofs for the object
+    /// * `object_states` - Vector of (slot, object state) pairs in ascending slot order
+    /// * `proofs` - Vector of (slot, object proof) pairs in ascending slot order
     ///
     /// # Returns
     /// A VerificationResult indicating whether the proof chain is valid
     pub fn verify_proof_chain(
         &self,
-        object_states: &HashMap<SlotNumber, TokenizedObject>,
-        proofs: &HashMap<SlotNumber, TokenizedObjectProof>,
+        object_states: &[(SlotNumber, TokenizedObject)],
+        proofs: &[(SlotNumber, TokenizedObjectProof)],
     ) -> VerificationResult {
         if object_states.is_empty() || proofs.is_empty() {
             return VerificationResult::MissingData("No object states or proofs provided".to_string());
@@ -82,7 +82,10 @@ impl<'a> ProofVerifier<'a> {
         
         // Verify each state has a corresponding proof
         for (slot, obj) in object_states {
-            if let Some(proof) = proofs.get(slot) {
+            // Find matching proof for this slot
+            let matching_proof = proofs.iter().find(|(proof_slot, _)| proof_slot == slot);
+            
+            if let Some((_, proof)) = matching_proof {
                 match self.verify_object_proof(obj, proof) {
                     VerificationResult::Valid => {},
                     result => return result,
@@ -94,16 +97,10 @@ impl<'a> ProofVerifier<'a> {
             }
         }
         
-        // Verify proof chain links
-        let mut slots: Vec<_> = proofs.keys().copied().collect();
-        slots.sort();
-        
-        for i in 1..slots.len() {
-            let current_slot = slots[i];
-            let prev_slot = slots[i - 1];
-            
-            let current_proof = &proofs[&current_slot];
-            let prev_proof = &proofs[&prev_slot];
+        // Verify proof chain links - since proofs are ordered by slot, we can just iterate sequentially
+        for i in 1..proofs.len() {
+            let (current_slot, current_proof) = &proofs[i];
+            let (prev_slot, prev_proof) = &proofs[i - 1];
             
             // Verify the current proof references the previous proof correctly
             if let Some(prev_hash) = &current_proof.prev_proof_hash {

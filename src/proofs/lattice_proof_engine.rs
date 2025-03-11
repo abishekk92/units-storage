@@ -4,8 +4,9 @@ use crate::objects::TokenizedObject;
 use crate::proofs::{
     engine::ProofEngine,
     lattice_hash::{LatticeHash, LatticeHashParams},
-    StateProof, TokenizedObjectProof,
+    SlotNumber, StateProof, TokenizedObjectProof,
 };
+use crate::verification::VerificationResult;
 
 /// A proof engine implementation based on lattice homomorphic hashing
 pub struct LatticeProofEngine {
@@ -18,6 +19,68 @@ impl LatticeProofEngine {
         Self {
             hasher: LatticeHash::new(),
         }
+    }
+    
+    /// Verify a chain of proofs
+    ///
+    /// # Parameters
+    /// * `object_states` - Vector of (slot, object state) pairs in ascending slot order
+    /// * `proofs` - Vector of (slot, proof) pairs in ascending slot order
+    ///
+    /// # Returns
+    /// A VerificationResult indicating whether the proof chain is valid
+    pub fn verify_proof_chain_internal(
+        &self,
+        object_states: &[(SlotNumber, TokenizedObject)],
+        proofs: &[(SlotNumber, TokenizedObjectProof)],
+    ) -> VerificationResult {
+        if object_states.is_empty() || proofs.is_empty() {
+            return VerificationResult::MissingData("No object states or proofs provided".to_string());
+        }
+        
+        // Verify each state has a corresponding proof
+        for (slot, obj) in object_states {
+            // Find matching proof for this slot
+            let matching_proof = proofs.iter().find(|(proof_slot, _)| proof_slot == slot);
+            
+            if let Some((_, proof)) = matching_proof {
+                match self.verify_object_proof(obj, proof) {
+                    Ok(true) => {},
+                    Ok(false) => return VerificationResult::Invalid(
+                        format!("Proof verification failed for slot {}", slot)
+                    ),
+                    Err(e) => return VerificationResult::Invalid(
+                        format!("Proof verification error at slot {}: {}", slot, e)
+                    ),
+                }
+            } else {
+                return VerificationResult::MissingData(
+                    format!("Missing proof for slot {}", slot)
+                );
+            }
+        }
+        
+        // Verify proof chain links - since proofs are ordered by slot, we can just iterate sequentially
+        for i in 1..proofs.len() {
+            let (current_slot, current_proof) = &proofs[i];
+            let (prev_slot, prev_proof) = &proofs[i - 1];
+            
+            // Verify the current proof references the previous proof correctly
+            if let Some(prev_hash) = &current_proof.prev_proof_hash {
+                let computed_hash = prev_proof.hash();
+                if computed_hash != *prev_hash {
+                    return VerificationResult::Invalid(
+                        format!("Proof chain broken between slots {} and {}", prev_slot, current_slot)
+                    );
+                }
+            } else {
+                return VerificationResult::Invalid(
+                    format!("Proof at slot {} does not reference previous proof", current_slot)
+                );
+            }
+        }
+        
+        VerificationResult::Valid
     }
 
     /// Create a new lattice proof engine with custom parameters
@@ -222,6 +285,15 @@ impl ProofEngine for LatticeProofEngine {
         
         // No link to previous state proof
         Ok(false)
+    }
+    
+    fn verify_proof_history(
+        &self,
+        object_states: &[(SlotNumber, TokenizedObject)],
+        proofs: &[(SlotNumber, TokenizedObjectProof)]
+    ) -> VerificationResult {
+        // Use the internal implementation defined in the struct
+        self.verify_proof_chain_internal(object_states, proofs)
     }
 }
 

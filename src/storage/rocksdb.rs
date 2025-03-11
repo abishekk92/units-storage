@@ -9,9 +9,12 @@ use crate::{
         UnitsProofIterator, UnitsStateProofIterator, UnitsStorage, UnitsStorageIterator,
         UnitsStorageProofEngine, UnitsWriteAheadLog
     },
+    verification::VerificationResult,
 };
 #[cfg(feature = "rocksdb")]
 use anyhow::{Context, Result};
+#[cfg(feature = "rocksdb")]
+use log;
 #[cfg(feature = "rocksdb")]
 use rocksdb::{ColumnFamilyDescriptor, Options, DB};
 #[cfg(feature = "rocksdb")]
@@ -831,90 +834,44 @@ impl UnitsStorageProofEngine for RocksDbStorage {
         start_slot: SlotNumber,
         end_slot: SlotNumber
     ) -> Result<bool, StorageError> {
-        // Get the proofs at the start and end slots
-        let start_proof = match self.get_proof_at_slot(id, start_slot)? {
-            Some(proof) => proof,
-            None => return Err(StorageError::ProofNotAtSlot(start_slot)),
-        };
+        // Get all proofs between start and end slots
+        let mut proofs: Vec<(SlotNumber, TokenizedObjectProof)> = self
+            .get_proof_history(id)
+            .filter_map(|result| {
+                result.ok().filter(|(slot, _)| *slot >= start_slot && *slot <= end_slot)
+            })
+            .collect();
         
-        let end_proof = match self.get_proof_at_slot(id, end_slot)? {
-            Some(proof) => proof,
-            None => return Err(StorageError::ProofNotAtSlot(end_slot)),
-        };
+        // Sort proofs by slot (should be redundant as they are already ordered, but to be safe)
+        proofs.sort_by_key(|(slot, _)| *slot);
         
-        // If they're the same proof, return true
-        if start_proof.slot == end_proof.slot {
-            return Ok(true);
+        if proofs.is_empty() {
+            return Err(StorageError::ProofNotFound(*id));
         }
         
-        // Get the object at the end slot
-        let end_object = match self.get_at_slot(id, end_slot)? {
-            Some(obj) => obj,
-            None => return Err(StorageError::ObjectNotAtSlot(end_slot)),
-        };
-        
-        // Check that the end proof is valid for the end object
-        if !self.proof_engine.verify_object_proof(&end_object, &end_proof)? {
-            return Ok(false);
-        }
-        
-        // Verify the chain backwards
-        let mut current_proof = end_proof;
-        
-        while current_proof.slot > start_slot {
-            // Get the previous proof from the chain
-            let prev_proof_hash = match current_proof.prev_proof_hash {
-                Some(hash) => hash,
-                None => {
-                    // Chain is broken - no link to previous proof
-                    return Ok(false);
-                }
-            };
-            
-            // Find the previous proof in the history
-            // We need to scan backwards until we find a proof with the matching hash
-            let mut prev_proof_found = false;
-            
-            for result in self.get_proof_history(id) {
-                let (slot, prev_proof) = result?;
-                
-                // Skip proofs that are newer than the current one or older than the start slot
-                if slot >= current_proof.slot || slot < start_slot {
-                    continue;
-                }
-                
-                // Check if this is the right previous proof
-                if prev_proof.hash() == prev_proof_hash {
-                    // Verify that the previous proof is valid for the object at that slot
-                    match self.get_at_slot(id, slot)? {
-                        Some(prev_object) => {
-                            if !self.proof_engine.verify_object_proof(&prev_object, &prev_proof)? {
-                                return Ok(false);
-                            }
-                            
-                            // Move to the previous proof
-                            current_proof = prev_proof;
-                            prev_proof_found = true;
-                            break;
-                        },
-                        None => continue, // Object not found at this slot, try another proof
-                    }
-                }
-            }
-            
-            if !prev_proof_found {
-                // Couldn't find a valid previous proof
-                return Ok(false);
-            }
-            
-            // If we've reached the start proof, we're done
-            if current_proof.slot <= start_slot {
-                break;
+        // Get the corresponding object states
+        let mut object_states: Vec<(SlotNumber, TokenizedObject)> = Vec::new();
+        for (slot, _) in &proofs {
+            if let Some(obj) = self.get_at_slot(id, *slot)? {
+                object_states.push((*slot, obj));
+            } else {
+                return Err(StorageError::ObjectNotAtSlot(*slot));
             }
         }
         
-        // If we've made it to the start slot, verify the chain is complete
-        Ok(current_proof.slot == start_slot)
+        // Use the verifier from the proof engine for consistent verification
+        // Convert the result to ensure our return type matches the trait
+        match self.proof_engine.verify_proof_history(&object_states, &proofs) {
+            VerificationResult::Valid => Ok(true),
+            VerificationResult::Invalid(msg) => {
+                log::warn!("Proof chain verification failed: {}", msg);
+                Ok(false)
+            },
+            VerificationResult::MissingData(msg) => {
+                log::warn!("Proof chain missing data: {}", msg);
+                Err(StorageError::ProofMissingData(*id, msg))
+            }
+        }
     }
 }
 

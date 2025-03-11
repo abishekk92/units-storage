@@ -9,8 +9,10 @@ use crate::{
         UnitsProofIterator, UnitsStateProofIterator, UnitsStorage, UnitsStorageIterator,
         UnitsStorageProofEngine, UnitsWriteAheadLog, WALEntry
     },
+    verification::VerificationResult,
 };
 use anyhow::{Context, Result};
+use log;
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions},
     Row,
@@ -559,12 +561,47 @@ impl UnitsStorageProofEngine for SqliteStorage {
 
     fn verify_proof_chain(
         &self,
-        _id: &UnitsObjectId,
-        _start_slot: SlotNumber,
-        _end_slot: SlotNumber,
+        id: &UnitsObjectId,
+        start_slot: SlotNumber,
+        end_slot: SlotNumber,
     ) -> Result<bool, StorageError> {
-        // Not implemented for SQLite yet
-        Err(StorageError::Other("verify_proof_chain not implemented for SQLite".to_string()))
+        // Get all proofs between start and end slots
+        let mut proofs: Vec<(SlotNumber, TokenizedObjectProof)> = self
+            .get_proof_history(id)
+            .filter_map(|result| {
+                result.ok().filter(|(slot, _)| *slot >= start_slot && *slot <= end_slot)
+            })
+            .collect();
+        
+        if proofs.is_empty() {
+            return Err(StorageError::ProofNotFound(*id));
+        }
+        
+        // Sort proofs by slot (should be redundant as they are already ordered, but to be safe)
+        proofs.sort_by_key(|(slot, _)| *slot);
+        
+        // Get the corresponding object states
+        let mut object_states: Vec<(SlotNumber, TokenizedObject)> = Vec::new();
+        for (slot, _) in &proofs {
+            if let Some(obj) = self.get_at_slot(id, *slot)? {
+                object_states.push((*slot, obj));
+            } else {
+                return Err(StorageError::ObjectNotAtSlot(*slot));
+            }
+        }
+        
+        // Use the verifier from the proof engine for consistent verification
+        match self.proof_engine.verify_proof_history(&object_states, &proofs) {
+            VerificationResult::Valid => Ok(true),
+            VerificationResult::Invalid(msg) => {
+                log::warn!("Proof chain verification failed: {}", msg);
+                Ok(false)
+            },
+            VerificationResult::MissingData(msg) => {
+                log::warn!("Proof chain missing data: {}", msg);
+                Err(StorageError::ProofMissingData(*id, msg))
+            }
+        }
     }
 }
 

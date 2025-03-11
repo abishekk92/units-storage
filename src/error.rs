@@ -36,9 +36,17 @@ pub enum StorageError {
     #[error("Proof not found at slot {0}")]
     ProofNotAtSlot(u64),
     
+    /// Errors that occur when a proof is not found for an object
+    #[error("Proof not found for object {0:?}")]
+    ProofNotFound(crate::id::UnitsObjectId),
+    
     /// Errors when a proof chain validation fails
     #[error("Proof chain validation failed: {0}")]
     ProofChainInvalid(String),
+    
+    /// Errors when proof chain validation fails due to missing data
+    #[error("Proof chain missing data for object {0:?}: {1}")]
+    ProofMissingData(crate::id::UnitsObjectId, String),
     
     /// Generic errors that don't fit in other categories
     #[error("Other error: {0}")]
