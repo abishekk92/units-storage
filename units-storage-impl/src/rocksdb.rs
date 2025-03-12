@@ -14,8 +14,8 @@ use units_proofs::proofs::current_slot;
 use crate::wal::FileWriteAheadLog;
 #[cfg(feature = "rocksdb")]
 use crate::storage_traits::{
-    TransactionReceipt, TransactionReceiptStorage, UnitsProofIterator, UnitsReceiptIterator,
-    UnitsStateProofIterator, UnitsStorage, UnitsStorageIterator, UnitsStorageProofEngine, 
+    UnitsProofIterator, UnitsStateProofIterator, 
+    UnitsStorage, UnitsStorageIterator, UnitsStorageProofEngine, 
     UnitsWriteAheadLog
 };
 #[cfg(feature = "rocksdb")]

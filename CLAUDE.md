@@ -1,15 +1,16 @@
 # CLAUDE.md - Coding Assistant Reference
 
 ## Build Commands
-- Build: `fish -c "cargo build --features all"`
-- Check: `fish -c "cargo check --features all"`
-- Run tests: `fish -c "cargo test --features all"`
-- Run single test: `fish -c "cargo test test_name --features all"`
-- Run with release: `fish -c "cargo build --release --features all"`
+- Build: `fish -c "cargo workspaces exec -- cargo build --features all"`
+- Check: `fish -c "cargo workspaces exec -- cargo check --features all"`
+- Run tests: `fish -c "cargo workspaces exec -- cargo test --features all"`
+- Run single test: `fish -c "cargo test test_name --features all"` (specific crate test)
+- Run tests for specific crate: `fish -c "cd crate-name && cargo test --features all"`
+- Run with release: `fish -c "cargo workspaces exec -- cargo build --release --features all"`
 
 ## Code Style Guidelines
-- **Formatting**: Use `fish -c "cargo fmt"` for automatic formatting
-- **Linting**: Run `fish -c "cargo clippy"` to find issues
+- **Formatting**: Use `fish -c "cargo workspaces exec -- cargo fmt"` for automatic formatting
+- **Linting**: Run `fish -c "cargo workspaces exec -- cargo clippy"` to find issues
 - **Naming**: Use snake_case for variables/functions, CamelCase for types/traits
 - **Imports**: Group std imports first, then external crates, then internal modules
 - **Error Handling**: Use Result<T, E> with ? operator for propagation

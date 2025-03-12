@@ -7,7 +7,7 @@
 use units_core::id::UnitsObjectId;
 use units_core::objects::TokenizedObject;
 use units_proofs::{ProofEngine, SlotNumber, StateProof, TokenizedObjectProof};
-use crate::runtime::RuntimeTransactionReceipt;
+// Remove unused import
 use units_storage_impl::storage_traits::TransactionReceipt;
 use std::collections::HashMap;
 
@@ -267,15 +267,17 @@ pub fn detect_double_spend(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use units_core::id::tests::unique_id;
-    use units_proofs::{LatticeProofEngine, ProofEngine};
+    use units_core::id::UnitsObjectId;
+    use units_proofs::lattice_proof_engine::LatticeProofEngine;
+    use units_proofs::ProofEngine;
+    use units_core::objects::TokenType;
     
     fn create_test_object() -> TokenizedObject {
         TokenizedObject {
-            id: unique_id(),
-            holder: unique_id(),
-            token_type: crate::objects::TokenType::Native,
-            token_manager: unique_id(),
+            id: UnitsObjectId::unique_id_for_tests(),
+            holder: UnitsObjectId::unique_id_for_tests(),
+            token_type: TokenType::Native,
+            token_manager: UnitsObjectId::unique_id_for_tests(),
             data: vec![1, 2, 3, 4],
         }
     }

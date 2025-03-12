@@ -1256,9 +1256,9 @@ mod tests {
         let storage = MockSqliteStorage::new();
 
         // Create a test object
-        let id = unique_id();
-        let holder = unique_id();
-        let token_manager = unique_id();
+        let id = UnitsObjectId::unique_id_for_tests();
+        let holder = UnitsObjectId::unique_id_for_tests();
+        let token_manager = UnitsObjectId::unique_id_for_tests();
         let mut obj = TokenizedObject {
             id,
             holder,
@@ -1336,7 +1336,7 @@ mod tests {
         }
         
         // Test with non-existent object ID
-        let nonexistent_id = unique_id();
+        let nonexistent_id = UnitsObjectId::unique_id_for_tests();
         let result = storage.verify_proof_chain(&nonexistent_id, start_slot, end_slot);
         assert!(result.is_err());
         match result {

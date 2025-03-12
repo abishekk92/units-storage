@@ -1,7 +1,7 @@
 use units_core::error::StorageError;
 use units_core::id::UnitsObjectId;
 use units_core::objects::TokenizedObject;
-use crate::engine::{ProofEngine, StateProof, TokenizedObjectProof, SlotNumber, VerificationResult};
+use crate::engine::{ProofEngine, StateProof, TokenizedObjectProof, SlotNumber};
 use blake3;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Debug;
@@ -650,9 +650,9 @@ mod tests {
     fn test_merkle_proof_engine() {
         use crate::proofs::current_slot;
         // Create a test object
-        let id = unique_id();
-        let holder = unique_id();
-        let token_manager = unique_id();
+        let id = units_core::id::UnitsObjectId::unique_id_for_tests();
+        let holder = units_core::id::UnitsObjectId::unique_id_for_tests();
+        let token_manager = units_core::id::UnitsObjectId::unique_id_for_tests();
         let obj = TokenizedObject {
             id: id.clone(),
             holder,
