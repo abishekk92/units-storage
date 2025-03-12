@@ -1,4 +1,4 @@
-use crate::objects::TokenizedObject;
+use units_core::objects::TokenizedObject;
 use blake3;
 use std::convert::TryInto;
 
@@ -79,9 +79,9 @@ impl LatticeHash {
         bytes.extend_from_slice(object.holder.as_ref());
         bytes.extend_from_slice(object.token_manager.as_ref());
         bytes.push(match object.token_type {
-            crate::objects::TokenType::Native => 0,
-            crate::objects::TokenType::Custodial => 1,
-            crate::objects::TokenType::Proxy => 2,
+            units_core::objects::TokenType::Native => 0,
+            units_core::objects::TokenType::Custodial => 1,
+            units_core::objects::TokenType::Proxy => 2,
         });
         bytes.extend_from_slice(&object.data);
 
@@ -275,15 +275,15 @@ pub fn verify_state_proof(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::id::tests::unique_id;
-    use crate::objects::{TokenType, TokenizedObject};
+    use units_core::id::UnitsObjectId;
+    use units_core::objects::{TokenType, TokenizedObject};
 
     #[test]
     fn test_lattice_hash_basic() {
         // Create a test object
-        let id = unique_id();
-        let holder = unique_id();
-        let token_manager = unique_id();
+        let id = UnitsObjectId::unique_id_for_tests();
+        let holder = UnitsObjectId::unique_id_for_tests();
+        let token_manager = UnitsObjectId::unique_id_for_tests();
         let obj = TokenizedObject {
             id,
             holder,
@@ -317,22 +317,22 @@ mod tests {
     #[test]
     fn test_homomorphic_property() {
         // Create two test objects
-        let id1 = unique_id();
-        let id2 = unique_id();
+        let id1 = UnitsObjectId::unique_id_for_tests();
+        let id2 = UnitsObjectId::unique_id_for_tests();
 
         let obj1 = TokenizedObject {
             id: id1,
-            holder: unique_id(),
+            holder: UnitsObjectId::unique_id_for_tests(),
             token_type: TokenType::Native,
-            token_manager: unique_id(),
+            token_manager: UnitsObjectId::unique_id_for_tests(),
             data: vec![1, 2, 3],
         };
 
         let obj2 = TokenizedObject {
             id: id2,
-            holder: unique_id(),
+            holder: UnitsObjectId::unique_id_for_tests(),
             token_type: TokenType::Custodial,
-            token_manager: unique_id(),
+            token_manager: UnitsObjectId::unique_id_for_tests(),
             data: vec![4, 5, 6],
         };
 
@@ -370,10 +370,10 @@ mod tests {
         // Create 5 objects with different data
         for i in 0..5 {
             let obj = TokenizedObject {
-                id: unique_id(),
-                holder: unique_id(),
+                id: UnitsObjectId::unique_id_for_tests(),
+                holder: UnitsObjectId::unique_id_for_tests(),
                 token_type: TokenType::Native,
-                token_manager: unique_id(),
+                token_manager: UnitsObjectId::unique_id_for_tests(),
                 data: vec![i as u8, (i + 1) as u8, (i + 2) as u8],
             };
 

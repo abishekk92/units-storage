@@ -1,12 +1,8 @@
-use crate::error::StorageError;
-use crate::id::UnitsObjectId;
-use crate::objects::TokenizedObject;
-use crate::proofs::{
-    engine::ProofEngine,
-    lattice_hash::{LatticeHash, LatticeHashParams},
-    SlotNumber, StateProof, TokenizedObjectProof,
-};
-use crate::verification::VerificationResult;
+use units_core::error::StorageError;
+use units_core::id::UnitsObjectId;
+use units_core::objects::TokenizedObject;
+use crate::engine::{ProofEngine, StateProof, TokenizedObjectProof, SlotNumber, VerificationResult};
+use crate::lattice_hash::{LatticeHash, LatticeHashParams};
 
 /// A proof engine implementation based on lattice homomorphic hashing
 pub struct LatticeProofEngine {
@@ -19,6 +15,29 @@ impl LatticeProofEngine {
         Self {
             hasher: LatticeHash::new(),
         }
+    }
+    
+    /// Calculate a deterministic hash of an object
+    fn object_hash(&self, object: &TokenizedObject) -> [u8; 32] {
+        use sha2::{Sha256, Digest};
+        
+        let mut hasher = Sha256::new();
+        hasher.update(object.id.bytes());
+        hasher.update(object.holder.bytes());
+        hasher.update(object.token_manager.bytes());
+        
+        hasher.update(&[match object.token_type {
+            units_core::objects::TokenType::Native => 0,
+            units_core::objects::TokenType::Custodial => 1,
+            units_core::objects::TokenType::Proxy => 2,
+        }]);
+        
+        hasher.update(&object.data);
+        
+        let result = hasher.finalize();
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&result);
+        hash
     }
     
     /// Verify a chain of proofs
@@ -98,13 +117,28 @@ impl ProofEngine for LatticeProofEngine {
         prev_proof: Option<&TokenizedObjectProof>,
         transaction_hash: Option<[u8; 32]>
     ) -> Result<TokenizedObjectProof, StorageError> {
+        // Calculate object hash
+        let object_hash = self.object_hash(object);
+        
         // Hash the object and create a proof
         let hash = self.hasher.hash(object);
         let proof_data = self.hasher.create_proof(&hash);
         
         // Create the proof with the previous hash if available
         // and include the transaction hash that led to this state change
-        let proof = TokenizedObjectProof::new(proof_data, prev_proof, transaction_hash);
+        let prev_proof_hash = prev_proof.map(|p| p.hash());
+        
+        // Get current slot from system clock
+        let slot = crate::engine::SlotNumber::default(); // Will be replaced by proper slot logic
+        
+        let proof = TokenizedObjectProof {
+            object_id: object.id.clone(),
+            slot,
+            object_hash,
+            prev_proof_hash,
+            transaction_hash,
+            proof_data
+        };
         
         Ok(proof)
     }
@@ -114,7 +148,7 @@ impl ProofEngine for LatticeProofEngine {
         object: &TokenizedObject, 
         proof: &TokenizedObjectProof
     ) -> Result<bool, StorageError> {
-        Ok(self.hasher.verify(object, &proof.proof))
+        Ok(self.hasher.verify(object, &proof.proof_data))
     }
     
     fn verify_proof_chain(
@@ -146,21 +180,22 @@ impl ProofEngine for LatticeProofEngine {
         &self, 
         object_proofs: &[(UnitsObjectId, TokenizedObjectProof)],
         prev_state_proof: Option<&StateProof>,
-        _slot: crate::proofs::SlotNumber
+        _slot: SlotNumber
     ) -> Result<StateProof, StorageError> {
         // Extract just the proofs
         let proofs: Vec<&Vec<u8>> = object_proofs
             .iter()
-            .map(|(_, proof)| &proof.proof)
+            .map(|(_, proof)| &proof.proof_data)
             .collect();
         
         // If there are no proofs, return an empty state proof
         if proofs.is_empty() {
-            return Ok(StateProof::new(
-                Vec::new(),
-                Vec::new(),
-                prev_state_proof
-            ));
+            return Ok(StateProof {
+                slot: _slot,
+                prev_state_proof_hash: prev_state_proof.map(|p| p.hash()),
+                object_ids: Vec::new(),
+                proof_data: Vec::new(),
+            });
         }
         
         // Start with the first hash
@@ -222,11 +257,12 @@ impl ProofEngine for LatticeProofEngine {
             .collect();
             
         // Create the state proof with link to previous
-        let state_proof = StateProof::new(
-            state_proof_data,
-            included_objects,
-            prev_state_proof
-        );
+        let state_proof = StateProof {
+            slot: _slot,
+            prev_state_proof_hash: prev_state_proof.map(|p| p.hash()),
+            object_ids: included_objects,
+            proof_data: state_proof_data
+        };
         
         Ok(state_proof)
     }
@@ -241,12 +277,12 @@ impl ProofEngine for LatticeProofEngine {
         let expected_included_ids: Vec<_> = object_proofs.iter().map(|(id, _)| id).collect();
         
         // Verify that the state proof includes exactly these objects
-        if state_proof.included_objects.len() != expected_included_ids.len() {
+        if state_proof.object_ids.len() != expected_included_ids.len() {
             return Ok(false);
         }
         
         for id in expected_included_ids {
-            if !state_proof.included_objects.contains(id) {
+            if !state_proof.object_ids.contains(id) {
                 return Ok(false);
             }
         }
@@ -259,7 +295,7 @@ impl ProofEngine for LatticeProofEngine {
         )?;
         
         // Compare just the proof data
-        Ok(state_proof.proof == temp_state_proof.proof)
+        Ok(state_proof.proof_data == temp_state_proof.proof_data)
     }
     
     fn verify_state_proof_chain(
@@ -268,7 +304,7 @@ impl ProofEngine for LatticeProofEngine {
         prev_state_proof: &StateProof
     ) -> Result<bool, StorageError> {
         // First verify the state proof itself
-        if state_proof.proof.is_empty() || prev_state_proof.proof.is_empty() {
+        if state_proof.proof_data.is_empty() || prev_state_proof.proof_data.is_empty() {
             return Ok(false);
         }
         
@@ -278,7 +314,7 @@ impl ProofEngine for LatticeProofEngine {
         }
         
         // Verify the previous hash link
-        if let Some(ref prev_hash) = state_proof.prev_proof_hash {
+        if let Some(ref prev_hash) = state_proof.prev_state_proof_hash {
             let computed_prev_hash = prev_state_proof.hash();
             return Ok(computed_prev_hash == *prev_hash);
         }
@@ -306,16 +342,15 @@ impl Default for LatticeProofEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::id::tests::unique_id;
-    use crate::objects::{TokenType, TokenizedObject};
-    use crate::proofs::engine::ProofEngine;
+    use units_core::id::UnitsObjectId;
+    use units_core::objects::{TokenType, TokenizedObject};
 
     #[test]
     fn test_proof_engine_basic() {
         // Create a test object
-        let id = unique_id();
-        let holder = unique_id();
-        let token_manager = unique_id();
+        let id = UnitsObjectId::unique_id_for_tests();
+        let holder = UnitsObjectId::unique_id_for_tests();
+        let token_manager = UnitsObjectId::unique_id_for_tests();
         let obj = TokenizedObject {
             id,
             holder,
@@ -345,18 +380,18 @@ mod tests {
         use crate::proofs::current_slot;
         // Create multiple test objects
         let obj1 = TokenizedObject {
-            id: unique_id(),
-            holder: unique_id(),
+            id: UnitsObjectId::unique_id_for_tests(),
+            holder: UnitsObjectId::unique_id_for_tests(),
             token_type: TokenType::Native,
-            token_manager: unique_id(),
+            token_manager: UnitsObjectId::unique_id_for_tests(),
             data: vec![1, 2, 3],
         };
         
         let obj2 = TokenizedObject {
-            id: unique_id(),
-            holder: unique_id(),
+            id: UnitsObjectId::unique_id_for_tests(),
+            holder: UnitsObjectId::unique_id_for_tests(),
             token_type: TokenType::Custodial,
-            token_manager: unique_id(),
+            token_manager: UnitsObjectId::unique_id_for_tests(),
             data: vec![4, 5, 6],
         };
         

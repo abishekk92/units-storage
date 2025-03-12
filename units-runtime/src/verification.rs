@@ -3,11 +3,12 @@
 //! This module provides standalone verification functions for receipts and proofs
 //! that don't require access to the storage layer.
 
-// use crate::error::StorageError; // Not needed
-use crate::id::UnitsObjectId;
-use crate::objects::TokenizedObject;
-use crate::proofs::{ProofEngine, SlotNumber, StateProof, TokenizedObjectProof};
-use crate::runtime::TransactionReceipt;
+// use units_core::error::StorageError; // Not needed
+use units_core::id::UnitsObjectId;
+use units_core::objects::TokenizedObject;
+use units_proofs::{ProofEngine, SlotNumber, StateProof, TokenizedObjectProof};
+use crate::runtime::RuntimeTransactionReceipt;
+use units_storage_impl::storage_traits::TransactionReceipt;
 use std::collections::HashMap;
 
 /// Result of a verification operation
@@ -141,7 +142,7 @@ impl<'a> ProofVerifier<'a> {
         objects: &HashMap<UnitsObjectId, TokenizedObject>,
     ) -> VerificationResult {
         // Verify each object proof in the receipt
-        for (id, proof) in &receipt.object_proofs {
+        for (id, proof) in &receipt.proofs {
             if let Some(object) = objects.get(id) {
                 match self.verify_object_proof(object, proof) {
                     VerificationResult::Valid => {},
@@ -182,7 +183,7 @@ impl<'a> ProofVerifier<'a> {
         object_proofs: &HashMap<UnitsObjectId, TokenizedObjectProof>,
     ) -> VerificationResult {
         // Verify each object in the state proof has a valid proof
-        for id in &state_proof.included_objects {
+        for id in &state_proof.object_ids {
             if !object_proofs.contains_key(id) {
                 return VerificationResult::MissingData(
                     format!("Missing proof for object {:?} in state proof", id)
@@ -239,7 +240,7 @@ pub fn detect_double_spend(
     sorted_receipts.sort_by_key(|r| r.slot);
     
     for receipt in sorted_receipts {
-        if let Some(_proof) = receipt.object_proofs.get(object_id) {
+        if let Some(_proof) = receipt.proofs.get(object_id) {
             let transaction_hash = receipt.transaction_hash;
             let slot = receipt.slot;
             
@@ -266,8 +267,8 @@ pub fn detect_double_spend(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::id::tests::unique_id;
-    use crate::proofs::{LatticeProofEngine, ProofEngine};
+    use units_core::id::tests::unique_id;
+    use units_proofs::{LatticeProofEngine, ProofEngine};
     
     fn create_test_object() -> TokenizedObject {
         TokenizedObject {

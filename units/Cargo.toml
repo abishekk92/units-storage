@@ -1,0 +1,15 @@
+[package]
+name = "units"
+version.workspace = true
+edition.workspace = true
+description = "Universal Information Tokenization System (UNITS)"
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords = ["units", "tokenization"]
+
+[dependencies]
+units-core.workspace = true
+units-proofs.workspace = true
+units-storage-impl = { workspace = true, features = ["all"] }
+units-runtime.workspace = true

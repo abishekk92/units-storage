@@ -1,9 +1,34 @@
-use crate::error::StorageError;
-use crate::id::UnitsObjectId;
-use crate::objects::TokenizedObject;
-use crate::proofs::{ProofEngine, SlotNumber, StateProof, TokenizedObjectProof};
-use crate::runtime::TransactionReceipt;
+use units_core::error::StorageError;
+use units_core::id::UnitsObjectId;
+use units_core::objects::TokenizedObject;
+use units_proofs::{ProofEngine, SlotNumber, StateProof, TokenizedObjectProof};
 use serde::{Deserialize, Serialize};
+
+/// A temporary TransactionReceipt implementation until the units-runtime crate is fully functional
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransactionReceipt {
+    pub transaction_hash: [u8; 32],
+    pub slot: SlotNumber,
+    pub success: bool,
+    pub timestamp: u64,
+    pub proofs: HashMap<UnitsObjectId, TokenizedObjectProof>,
+}
+
+impl TransactionReceipt {
+    pub fn new(transaction_hash: [u8; 32], slot: SlotNumber, success: bool, timestamp: u64) -> Self {
+        Self {
+            transaction_hash,
+            slot,
+            success,
+            timestamp,
+            proofs: HashMap::new(),
+        }
+    }
+
+    pub fn add_proof(&mut self, id: UnitsObjectId, proof: TokenizedObjectProof) {
+        self.proofs.insert(id, proof);
+    }
+}
 use std::collections::HashMap;
 use std::iter::Iterator;
 use std::path::Path;

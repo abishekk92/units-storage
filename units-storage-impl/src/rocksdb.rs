@@ -1,15 +1,22 @@
 #[cfg(feature = "rocksdb")]
-use crate::{
-    error::StorageError,
-    id::UnitsObjectId,
-    objects::TokenizedObject,
-    proofs::{current_slot, LatticeProofEngine, ProofEngine, SlotNumber, StateProof, TokenizedObjectProof},
-    storage::FileWriteAheadLog,
-    storage_traits::{
-        UnitsProofIterator, UnitsStateProofIterator, UnitsStorage, UnitsStorageIterator,
-        UnitsStorageProofEngine, UnitsWriteAheadLog
-    },
-    verification::VerificationResult,
+use units_core::error::StorageError;
+#[cfg(feature = "rocksdb")]
+use units_core::id::UnitsObjectId;
+#[cfg(feature = "rocksdb")]
+use units_core::objects::TokenizedObject;
+#[cfg(feature = "rocksdb")]
+use units_proofs::{ProofEngine, SlotNumber, StateProof, TokenizedObjectProof, VerificationResult};
+#[cfg(feature = "rocksdb")]
+use units_proofs::lattice_proof_engine::LatticeProofEngine;
+#[cfg(feature = "rocksdb")]
+use units_proofs::proofs::current_slot;
+#[cfg(feature = "rocksdb")]
+use crate::wal::FileWriteAheadLog;
+#[cfg(feature = "rocksdb")]
+use crate::storage_traits::{
+    TransactionReceipt, TransactionReceiptStorage, UnitsProofIterator, UnitsReceiptIterator,
+    UnitsStateProofIterator, UnitsStorage, UnitsStorageIterator, UnitsStorageProofEngine, 
+    UnitsWriteAheadLog
 };
 #[cfg(feature = "rocksdb")]
 use anyhow::{Context, Result};
@@ -746,7 +753,7 @@ impl UnitsStorageProofEngine for RocksDbStorage {
         let history_key = make_history_key(id, slot);
         
         // Get the proof from history
-        match self.db.get_cf(&cf_proof_history, &history_key)? {
+        match self.db.get_cf(&cf_proof_history, &history_key).map_err(|e| StorageError::Database(e.to_string()))? {
             Some(value) => {
                 let proof = bincode::deserialize(&value)
                     .with_context(|| format!("Failed to deserialize proof history for ID: {:?} at slot {}", id, slot))?;
@@ -807,7 +814,7 @@ impl UnitsStorageProofEngine for RocksDbStorage {
         let key = slot.to_le_bytes();
         
         // Get the state proof
-        match self.db.get_cf(&cf_state_proofs, &key)? {
+        match self.db.get_cf(&cf_state_proofs, &key).map_err(|e| StorageError::Database(e.to_string()))? {
             Some(value) => {
                 let proof = bincode::deserialize(&value)
                     .with_context(|| format!("Failed to deserialize state proof at slot {}", slot))?;
@@ -887,8 +894,8 @@ impl Debug for RocksDbStorage {
 #[cfg(all(test, feature = "rocksdb"))]
 mod tests {
     use super::*;
-    use crate::id::tests::unique_id;
-    use crate::objects::TokenType;
+    use units_core::id::UnitsObjectId;
+    use units_core::objects::TokenType;
     use crate::storage_traits::WALEntry;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
@@ -1132,7 +1139,7 @@ mod tests {
         
         fn generate_state_proof(&self, _slot: Option<SlotNumber>) -> Result<StateProof, StorageError> {
             // Generate a simple state proof without previous state
-            let slot = _slot.unwrap_or_else(crate::proofs::current_slot);
+            let slot = _slot.unwrap_or_else(units_proofs::proofs::current_slot);
             
             // Collect all proofs for state proof generation
             let proofs_lock = self.proofs.lock().unwrap();
@@ -1344,7 +1351,7 @@ mod tests {
         let state_proof = storage.generate_state_proof(None).unwrap();
 
         // We should have a non-empty proof now
-        assert!(!state_proof.proof.is_empty());
+        assert!(!state_proof.proof_data.is_empty());
     }
 
     #[test]
@@ -1356,10 +1363,10 @@ mod tests {
         let mut objects = Vec::new();
         for i in 0..5 {
             let obj = TokenizedObject {
-                id: unique_id(),
-                holder: unique_id(),
+                id: UnitsObjectId::unique_id_for_tests(),
+                holder: UnitsObjectId::unique_id_for_tests(),
                 token_type: TokenType::Native,
-                token_manager: unique_id(),
+                token_manager: UnitsObjectId::unique_id_for_tests(),
                 data: vec![i as u8; 4],
             };
             objects.push(obj.clone());

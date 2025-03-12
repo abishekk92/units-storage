@@ -1,10 +1,38 @@
-# UNITS Storage
+# UNITS (Universal Information Tokenization System)
 
-A versatile storage system for the Universal Information Tokenization System (UNITS).
+A modular storage and runtime system for the Universal Information Tokenization System (UNITS).
 
 ## Overview
 
-UNITS is a component of Finternet that provides a way to tokenize and manage objects. This crate implements storage backends for UNITS objects, which can be persisted and retrieved using various storage engines.
+UNITS is a component of Finternet that provides a way to tokenize and manage objects. This workspace implements the full UNITS stack, organized into logical crates that work together.
+
+## Workspace Structure
+
+The project is organized as a Cargo workspace with the following crates:
+
+- **units-core**: Core data structures and fundamental types
+  - UnitsObjectId
+  - TokenizedObject
+  - Basic error types
+
+- **units-proofs**: Cryptographic proof systems
+  - Merkle Proofs
+  - Lattice Proofs
+  - Proof Engines
+  - State Proofs
+
+- **units-storage-impl**: Storage backends
+  - Storage Traits
+  - SQLite Implementation
+  - RocksDB Implementation
+  - Write-Ahead Log
+
+- **units-runtime**: Runtime and verification
+  - Object Runtime
+  - Proof Verification
+  - Transaction Processing
+
+- **units**: Convenience wrapper crate that re-exports all components
 
 ## Features
 
@@ -63,21 +91,27 @@ Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-units-storage = "0.1.0"
+units = "0.1.0"  # For the complete package
+
+# Or use specific components:
+units-core = "0.1.0"
+units-proofs = "0.1.0"
+units-storage-impl = { version = "0.1.0", features = ["sqlite"] }
+units-runtime = "0.1.0"
 ```
 
 By default, the SQLite storage backend is enabled. If you want to use RocksDB:
 
 ```toml
 [dependencies]
-units-storage = { version = "0.1.0", features = ["rocksdb"] }
+units-storage-impl = { version = "0.1.0", features = ["rocksdb"] }
 ```
 
 To use both backends:
 
 ```toml
 [dependencies]
-units-storage = { version = "0.1.0", features = ["all"] }
+units-storage-impl = { version = "0.1.0", features = ["all"] }
 ```
 
 ## Examples
@@ -85,7 +119,9 @@ units-storage = { version = "0.1.0", features = ["all"] }
 ### Basic Usage
 
 ```rust
-use units_storage::{UnitsObjectId, TokenizedObject, TokenType, SqliteStorage, UnitsStorage};
+use units::{UnitsObjectId, TokenizedObject, TokenType};
+use units::SqliteStorage;  // With sqlite feature enabled
+use units::UnitsStorage;
 use std::path::Path;
 
 // Create a storage instance

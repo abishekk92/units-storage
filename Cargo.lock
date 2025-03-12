@@ -1907,22 +1907,80 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39ec24b3121d976906ece63c9daad25b85969647682eee313cb5779fdd69e14e"
 
 [[package]]
-name = "units-storage"
+name = "units"
+version = "0.1.0"
+dependencies = [
+ "units-core",
+ "units-proofs",
+ "units-runtime",
+ "units-storage-impl",
+]
+
+[[package]]
+name = "units-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "bincode",
- "blake3",
- "chrono",
  "curve25519-dalek",
  "log",
  "rocksdb",
  "serde",
  "sha2",
  "sqlx",
+ "thiserror",
+]
+
+[[package]]
+name = "units-proofs"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "blake3",
+ "curve25519-dalek",
+ "log",
+ "serde",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "units-core",
+]
+
+[[package]]
+name = "units-runtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "chrono",
+ "curve25519-dalek",
+ "log",
+ "serde",
+ "tempfile",
+ "thiserror",
+ "units-core",
+ "units-proofs",
+ "units-storage-impl",
+]
+
+[[package]]
+name = "units-storage-impl"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "chrono",
+ "curve25519-dalek",
+ "log",
+ "rocksdb",
+ "serde",
+ "sqlx",
  "tempfile",
  "thiserror",
  "tokio",
+ "units-core",
+ "units-proofs",
 ]
 
 [[package]]

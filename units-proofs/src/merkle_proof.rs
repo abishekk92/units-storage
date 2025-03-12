@@ -1,7 +1,7 @@
-use crate::error::StorageError;
-use crate::id::UnitsObjectId;
-use crate::objects::TokenizedObject;
-use crate::proofs::{ProofEngine, StateProof, TokenizedObjectProof};
+use units_core::error::StorageError;
+use units_core::id::UnitsObjectId;
+use units_core::objects::TokenizedObject;
+use crate::engine::{ProofEngine, StateProof, TokenizedObjectProof, SlotNumber, VerificationResult};
 use blake3;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Debug;
@@ -204,9 +204,9 @@ impl MerkleTree {
         hasher.update(object.holder.as_ref());
         hasher.update(object.token_manager.as_ref());
         hasher.update(&[match object.token_type {
-            crate::objects::TokenType::Native => 0,
-            crate::objects::TokenType::Custodial => 1,
-            crate::objects::TokenType::Proxy => 2,
+            units_core::objects::TokenType::Native => 0,
+            units_core::objects::TokenType::Custodial => 1,
+            units_core::objects::TokenType::Proxy => 2,
         }]);
         hasher.update(&object.data);
 
@@ -389,7 +389,14 @@ impl MerkleProofEngine {
         // Serialize the proof
         let serialized = serialize_proof(&proof);
 
-        TokenizedObjectProof::new(serialized, None, transaction_hash)
+        // Create a new proof
+        let mut token_proof = TokenizedObjectProof::new(serialized, None, transaction_hash);
+        
+        // Set the object-specific fields that the constructor doesn't handle
+        token_proof.object_id = object.id.clone();
+        token_proof.object_hash = MerkleTree::hash_object(object);
+        
+        token_proof
     }
 }
 
@@ -403,10 +410,15 @@ impl ProofEngine for MerkleProofEngine {
     ) -> Result<TokenizedObjectProof, StorageError> {
         // For immutability compliance, clone the engine and use the helper method
         let mut engine_clone = self.clone();
-        let proof_data = engine_clone.add_and_generate_proof(object, transaction_hash).proof;
+        let helper_proof = engine_clone.add_and_generate_proof(object, transaction_hash);
+        let proof_data = helper_proof.proof_data.clone();
         
         // Create a new proof that links to the previous state and includes transaction hash
-        let proof = TokenizedObjectProof::new(proof_data, prev_proof, transaction_hash);
+        let mut proof = TokenizedObjectProof::new(proof_data, prev_proof, transaction_hash);
+        
+        // Set the object-specific fields that the constructor doesn't handle
+        proof.object_id = object.id.clone();
+        proof.object_hash = MerkleTree::hash_object(object);
         
         Ok(proof)
     }
@@ -442,7 +454,7 @@ impl ProofEngine for MerkleProofEngine {
         &self,
         object_proofs: &[(UnitsObjectId, TokenizedObjectProof)],
         prev_state_proof: Option<&StateProof>,
-        _slot: crate::proofs::SlotNumber
+        _slot: SlotNumber
     ) -> Result<StateProof, StorageError> {
         // For a Merkle tree, we need to rebuild the tree from the object proofs
         let tree_clone = self.tree.clone();
@@ -473,7 +485,7 @@ impl ProofEngine for MerkleProofEngine {
         proof: &TokenizedObjectProof,
     ) -> Result<bool, StorageError> {
         // Deserialize the proof
-        let merkle_proof = match deserialize_proof(&proof.proof) {
+        let merkle_proof = match deserialize_proof(&proof.proof_data) {
             Some(p) => p,
             None => return Ok(false),
         };
@@ -526,13 +538,13 @@ impl ProofEngine for MerkleProofEngine {
     ) -> Result<bool, StorageError> {
         // For a Merkle tree, verifying the state proof means checking that
         // the state proof matches the root hash computed from all object proofs
-        if state_proof.proof.len() != 32 {
+        if state_proof.proof_data.len() != 32 {
             return Ok(false);
         }
 
         // Extract the claimed root hash from the state proof
         let mut claimed_root = [0u8; 32];
-        claimed_root.copy_from_slice(&state_proof.proof);
+        claimed_root.copy_from_slice(&state_proof.proof_data);
 
         // Create a temporary tree for verification
         let mut verify_tree = MerkleTree::new();
@@ -540,7 +552,7 @@ impl ProofEngine for MerkleProofEngine {
         // Add proofs to the verification tree
         for (id, proof) in object_proofs {
             // Deserialize the proof
-            let merkle_proof = match deserialize_proof(&proof.proof) {
+            let merkle_proof = match deserialize_proof(&proof.proof_data) {
                 Some(p) => p,
                 None => return Ok(false),
             };
@@ -568,7 +580,7 @@ impl ProofEngine for MerkleProofEngine {
         prev_state_proof: &StateProof
     ) -> Result<bool, StorageError> {
         // First verify the state proof itself
-        if state_proof.proof.is_empty() || prev_state_proof.proof.is_empty() {
+        if state_proof.proof_data.is_empty() || prev_state_proof.proof_data.is_empty() {
             return Ok(false);
         }
         
@@ -578,7 +590,7 @@ impl ProofEngine for MerkleProofEngine {
         }
         
         // Verify the previous hash link
-        if let Some(ref prev_hash) = state_proof.prev_proof_hash {
+        if let Some(ref prev_hash) = state_proof.prev_state_proof_hash {
             let computed_prev_hash = prev_state_proof.hash();
             return Ok(computed_prev_hash == *prev_hash);
         }
@@ -591,15 +603,15 @@ impl ProofEngine for MerkleProofEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::id::tests::unique_id;
-    use crate::objects::{TokenType, TokenizedObject};
+    use units_core::id::UnitsObjectId;
+    use units_core::objects::{TokenType, TokenizedObject};
 
     #[test]
     fn test_merkle_proof_basic() {
         // Create a test object
-        let id = unique_id();
-        let holder = unique_id();
-        let token_manager = unique_id();
+        let id = UnitsObjectId::unique_id_for_tests();
+        let holder = UnitsObjectId::unique_id_for_tests();
+        let token_manager = UnitsObjectId::unique_id_for_tests();
         let obj = TokenizedObject {
             id,
             holder,
@@ -689,12 +701,12 @@ mod tests {
 
         // Create 5 objects with different data
         for i in 0..5 {
-            let id = unique_id();
+            let id = UnitsObjectId::unique_id_for_tests();
             let obj = TokenizedObject {
                 id: id.clone(),
-                holder: unique_id(),
+                holder: UnitsObjectId::unique_id_for_tests(),
                 token_type: TokenType::Native,
-                token_manager: unique_id(),
+                token_manager: UnitsObjectId::unique_id_for_tests(),
                 data: vec![i as u8, (i + 1) as u8, (i + 2) as u8],
             };
 

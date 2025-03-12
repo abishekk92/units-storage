@@ -8,6 +8,18 @@ use std::ops::Deref;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct UnitsObjectId([u8; 32]);
 
+impl Ord for UnitsObjectId {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.cmp(&other.0)
+    }
+}
+
+impl PartialOrd for UnitsObjectId {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 impl Default for UnitsObjectId {
     fn default() -> Self {
         UnitsObjectId([0; 32])
@@ -32,6 +44,11 @@ impl UnitsObjectId {
         UnitsObjectId(bytes)
     }
     
+    /// Get a reference to the internal bytes
+    pub fn bytes(&self) -> &[u8] {
+        &self.0
+    }
+    
     /// Create a random UnitsObjectId for testing
     pub fn random() -> Self {
         // Generate a random ID using system time
@@ -45,7 +62,23 @@ impl UnitsObjectId {
         let (id, _) = Self::find_uid(&[&now, &[1, 2, 3, 4]]);
         id
     }
+    
+    /// Generate a unique UnitsObjectId for testing purposes - exposed for testing in other crates
+    pub fn unique_id_for_tests() -> Self {
+        // Use current timestamp as basis for uniqueness
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_nanos()
+            .to_le_bytes();
 
+        let ts_slice = timestamp.as_slice();
+        let extra = [1, 2, 3, 4];
+
+        let (id, _) = UnitsObjectId::find_uid(&[ts_slice, &extra]);
+        id
+    }
+    
     pub fn create_object_id(seeds: &[&[u8]], bump: u8) -> [u8; 32] {
         let mut hasher = Sha256::new();
 

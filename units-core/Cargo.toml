@@ -1,0 +1,27 @@
+[package]
+name = "units-core"
+version.workspace = true
+edition.workspace = true
+description = "Core components for Universal Information Tokenization System (UNITS)"
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords = ["units", "tokenization", "core"]
+
+[dependencies]
+curve25519-dalek.workspace = true
+sha2.workspace = true
+bincode.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+log.workspace = true
+
+# Optional dependencies
+rocksdb = { workspace = true, optional = true }
+sqlx = { workspace = true, optional = true }
+
+[features]
+default = []
+sqlite = ["dep:sqlx"]
+rocksdb = ["dep:rocksdb"]

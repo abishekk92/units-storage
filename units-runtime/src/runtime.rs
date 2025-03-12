@@ -1,10 +1,12 @@
 use serde::{Serialize, Deserialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
-use crate::error::StorageError;
-use crate::id::UnitsObjectId;
-use crate::proofs::{SlotNumber, TokenizedObjectProof};
-use crate::storage_traits::{TransactionReceiptStorage, UnitsReceiptIterator};
+use units_core::error::StorageError;
+use units_core::id::UnitsObjectId;
+use units_proofs::{SlotNumber, TokenizedObjectProof};
+use units_storage_impl::storage_traits::{
+    TransactionReceiptStorage, UnitsReceiptIterator, TransactionReceipt
+};
 
 /// A transaction hash uniquely identifies a transaction in the system
 pub type TransactionHash = [u8; 32];
@@ -64,7 +66,7 @@ pub struct TransactionResult {
 
 /// A receipt of a processed transaction, containing all proofs of object modifications
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TransactionReceipt {
+pub struct RuntimeTransactionReceipt {
     /// The hash of the transaction that was executed
     pub transaction_hash: TransactionHash,
     
@@ -84,7 +86,7 @@ pub struct TransactionReceipt {
     pub error_message: Option<String>,
 }
 
-impl TransactionReceipt {
+impl RuntimeTransactionReceipt {
     /// Create a new transaction receipt
     pub fn new(
         transaction_hash: TransactionHash, 
@@ -119,6 +121,43 @@ impl TransactionReceipt {
     }
 }
 
+// Conversion functions between RuntimeTransactionReceipt and TransactionReceipt
+impl From<RuntimeTransactionReceipt> for TransactionReceipt {
+    fn from(receipt: RuntimeTransactionReceipt) -> Self {
+        let mut tr = TransactionReceipt::new(
+            receipt.transaction_hash,
+            receipt.slot,
+            receipt.success,
+            receipt.timestamp
+        );
+        
+        // Add all proofs
+        for (id, proof) in receipt.object_proofs {
+            tr.add_proof(id, proof);
+        }
+        
+        tr
+    }
+}
+
+impl From<TransactionReceipt> for RuntimeTransactionReceipt {
+    fn from(receipt: TransactionReceipt) -> Self {
+        let mut rtr = RuntimeTransactionReceipt::new(
+            receipt.transaction_hash,
+            receipt.slot,
+            receipt.success,
+            receipt.timestamp
+        );
+        
+        // Add all proofs
+        for (id, proof) in receipt.proofs {
+            rtr.add_proof(id, proof);
+        }
+        
+        rtr
+    }
+}
+
 /// Runtime for executing transactions that modify TokenizedObjects
 pub trait Runtime {
     /// Check for potential conflicts with pending or recent transactions
@@ -144,7 +183,7 @@ pub trait Runtime {
     }
     
     /// Execute a transaction and return a transaction receipt with proofs
-    fn execute_transaction(&self, transaction: Transaction) -> TransactionReceipt;
+    fn execute_transaction(&self, transaction: Transaction) -> RuntimeTransactionReceipt;
     
     /// Try to execute a transaction with conflict checking
     ///
@@ -157,7 +196,7 @@ pub trait Runtime {
     /// # Returns
     /// Either a receipt or a conflict error
     fn try_execute_transaction(&self, transaction: Transaction) 
-        -> Result<TransactionReceipt, ConflictResult> 
+        -> Result<RuntimeTransactionReceipt, ConflictResult> 
     {
         // Check for conflicts
         match self.check_conflicts(&transaction) {
@@ -184,7 +223,7 @@ pub trait Runtime {
     /// # Returns
     /// A receipt for the rollback transaction if successful
     fn rollback_transaction(&self, _transaction_hash: &TransactionHash) 
-        -> Result<TransactionReceipt, String>
+        -> Result<RuntimeTransactionReceipt, String>
     {
         // Default implementation returns an error since not all runtimes support rollback
         Err("Transaction rollback not supported by this runtime".to_string())
@@ -194,7 +233,7 @@ pub trait Runtime {
     fn get_transaction(&self, hash: &TransactionHash) -> Option<Transaction>;
     
     /// Get a transaction receipt by the transaction hash
-    fn get_transaction_receipt(&self, hash: &TransactionHash) -> Option<TransactionReceipt>;
+    fn get_transaction_receipt(&self, hash: &TransactionHash) -> Option<RuntimeTransactionReceipt>;
 }
 
 /// Mock implementation of the Runtime trait for testing purposes
@@ -202,7 +241,7 @@ pub struct MockRuntime {
     /// Store of transactions by their hash
     transactions: HashMap<TransactionHash, Transaction>,
     /// Store of transaction receipts by transaction hash
-    receipts: HashMap<TransactionHash, TransactionReceipt>,
+    receipts: HashMap<TransactionHash, RuntimeTransactionReceipt>,
     /// Current slot for transaction processing
     current_slot: SlotNumber,
 }
@@ -223,7 +262,7 @@ impl MockRuntime {
     }
     
     /// Add a transaction receipt to the mock runtime's receipt store
-    pub fn add_receipt(&mut self, receipt: TransactionReceipt) {
+    pub fn add_receipt(&mut self, receipt: RuntimeTransactionReceipt) {
         self.receipts.insert(receipt.transaction_hash, receipt);
     }
     
@@ -295,13 +334,13 @@ impl Runtime for MockRuntime {
         }
     }
     
-    fn execute_transaction(&self, transaction: Transaction) -> TransactionReceipt {
+    fn execute_transaction(&self, transaction: Transaction) -> RuntimeTransactionReceipt {
         // In a mock implementation, we just pretend all transactions succeed
         let mut mock = self.clone();
         mock.add_transaction(transaction.clone());
         
         // Create a transaction receipt for this transaction
-        let receipt = TransactionReceipt::new(
+        let receipt = RuntimeTransactionReceipt::new(
             transaction.hash,
             self.current_slot,
             true,
@@ -321,7 +360,7 @@ impl Runtime for MockRuntime {
     }
     
     fn rollback_transaction(&self, transaction_hash: &TransactionHash) 
-        -> Result<TransactionReceipt, String> 
+        -> Result<RuntimeTransactionReceipt, String> 
     {
         // Check if the transaction exists
         let _transaction = match self.get_transaction(transaction_hash) {
@@ -345,7 +384,7 @@ impl Runtime for MockRuntime {
         // 3. Execute that transaction
         
         // For the mock, just create a receipt indicating rollback
-        let rollback_receipt = TransactionReceipt::new(
+        let rollback_receipt = RuntimeTransactionReceipt::new(
             rollback_hash,
             self.current_slot,
             true,
@@ -363,7 +402,7 @@ impl Runtime for MockRuntime {
         self.transactions.get(hash).cloned()
     }
     
-    fn get_transaction_receipt(&self, hash: &TransactionHash) -> Option<TransactionReceipt> {
+    fn get_transaction_receipt(&self, hash: &TransactionHash) -> Option<RuntimeTransactionReceipt> {
         self.receipts.get(hash).cloned()
     }
 }
@@ -381,7 +420,7 @@ impl Clone for MockRuntime {
 /// In-memory implementation of transaction receipt storage for testing
 pub struct InMemoryReceiptStorage {
     // Mapping from transaction hash to receipt
-    receipts_by_hash: Mutex<HashMap<[u8; 32], TransactionReceipt>>,
+    receipts_by_hash: Mutex<HashMap<[u8; 32], RuntimeTransactionReceipt>>,
     
     // Mapping from object ID to set of transaction hashes that affected it
     receipts_by_object: Mutex<HashMap<UnitsObjectId, HashSet<[u8; 32]>>>,
@@ -403,7 +442,7 @@ impl InMemoryReceiptStorage {
 
 /// Iterator implementation for receipts
 pub struct InMemoryReceiptIterator {
-    receipts: Vec<TransactionReceipt>,
+    receipts: Vec<RuntimeTransactionReceipt>,
     current_index: usize,
 }
 
@@ -414,7 +453,8 @@ impl Iterator for InMemoryReceiptIterator {
         if self.current_index < self.receipts.len() {
             let receipt = self.receipts[self.current_index].clone();
             self.current_index += 1;
-            Some(Ok(receipt))
+            // Convert to storage TransactionReceipt type
+            Some(Ok(receipt.into()))
         } else {
             None
         }
@@ -425,26 +465,29 @@ impl UnitsReceiptIterator for InMemoryReceiptIterator {}
 
 impl TransactionReceiptStorage for InMemoryReceiptStorage {
     fn store_receipt(&self, receipt: &TransactionReceipt) -> Result<(), StorageError> {
+        // Convert to RuntimeTransactionReceipt
+        let runtime_receipt: RuntimeTransactionReceipt = receipt.clone().into();
+        
         // Store the receipt by transaction hash
         {
             let mut receipts_by_hash = self.receipts_by_hash.lock().unwrap();
-            receipts_by_hash.insert(receipt.transaction_hash, receipt.clone());
+            receipts_by_hash.insert(runtime_receipt.transaction_hash, runtime_receipt.clone());
         }
         
         // Index the receipt by objects it affected
         {
             let mut receipts_by_object = self.receipts_by_object.lock().unwrap();
-            for object_id in receipt.object_proofs.keys() {
+            for object_id in runtime_receipt.object_proofs.keys() {
                 let entry = receipts_by_object.entry(*object_id).or_insert_with(HashSet::new);
-                entry.insert(receipt.transaction_hash);
+                entry.insert(runtime_receipt.transaction_hash);
             }
         }
         
         // Index the receipt by slot
         {
             let mut receipts_by_slot = self.receipts_by_slot.lock().unwrap();
-            let entry = receipts_by_slot.entry(receipt.slot).or_insert_with(HashSet::new);
-            entry.insert(receipt.transaction_hash);
+            let entry = receipts_by_slot.entry(runtime_receipt.slot).or_insert_with(HashSet::new);
+            entry.insert(runtime_receipt.transaction_hash);
         }
         
         Ok(())
@@ -452,7 +495,14 @@ impl TransactionReceiptStorage for InMemoryReceiptStorage {
     
     fn get_receipt(&self, hash: &[u8; 32]) -> Result<Option<TransactionReceipt>, StorageError> {
         let receipts_by_hash = self.receipts_by_hash.lock().unwrap();
-        Ok(receipts_by_hash.get(hash).cloned())
+        
+        // Convert to storage TransactionReceipt type
+        if let Some(runtime_receipt) = receipts_by_hash.get(hash) {
+            let storage_receipt: TransactionReceipt = runtime_receipt.clone().into();
+            Ok(Some(storage_receipt))
+        } else {
+            Ok(None)
+        }
     }
     
     fn get_receipts_for_object(&self, id: &UnitsObjectId) -> Box<dyn UnitsReceiptIterator + '_> {
@@ -519,7 +569,7 @@ impl TransactionReceiptStorage for InMemoryReceiptStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::id::tests::unique_id;
+    use units_core::id::tests::unique_id;
 
     #[test]
     fn test_transaction_receipt_creation() {
@@ -529,7 +579,7 @@ mod tests {
         let success = true;
         let timestamp = 123456789;
         
-        let mut receipt = TransactionReceipt::new(
+        let mut receipt = RuntimeTransactionReceipt::new(
             transaction_hash,
             slot,
             success,

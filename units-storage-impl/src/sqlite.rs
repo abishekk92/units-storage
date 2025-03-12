@@ -1,15 +1,14 @@
 #![cfg(feature = "sqlite")]
 
-use crate::{
-    error::StorageError,
-    id::UnitsObjectId,
-    objects::{TokenType, TokenizedObject},
-    proofs::{LatticeProofEngine, ProofEngine, StateProof, TokenizedObjectProof, SlotNumber},
-    storage_traits::{
-        UnitsProofIterator, UnitsStateProofIterator, UnitsStorage, UnitsStorageIterator,
-        UnitsStorageProofEngine, UnitsWriteAheadLog, WALEntry
-    },
-    verification::VerificationResult,
+use units_core::error::StorageError;
+use units_core::id::UnitsObjectId;
+use units_core::objects::{TokenType, TokenizedObject};
+use units_proofs::{ProofEngine, StateProof, TokenizedObjectProof, SlotNumber, VerificationResult};
+use units_proofs::lattice_proof_engine::LatticeProofEngine;
+use units_proofs::proofs;
+use crate::storage_traits::{
+    UnitsProofIterator, UnitsStateProofIterator, UnitsStorage, UnitsStorageIterator,
+    UnitsStorageProofEngine, UnitsWriteAheadLog, WALEntry
 };
 use anyhow::{Context, Result};
 use log;
@@ -105,7 +104,7 @@ impl SqliteStorage {
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS object_proofs (
                 object_id BLOB PRIMARY KEY,
-                proof BLOB NOT NULL,
+                proof_data BLOB NOT NULL,
                 slot INTEGER NOT NULL DEFAULT 0,
                 prev_proof_hash BLOB,
                 transaction_hash BLOB
@@ -120,7 +119,7 @@ impl SqliteStorage {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp INTEGER NOT NULL,
                 slot INTEGER NOT NULL DEFAULT 0,
-                proof BLOB NOT NULL
+                proof_data BLOB NOT NULL
             )",
         )
         .execute(pool)
@@ -133,7 +132,7 @@ impl SqliteStorage {
                 object_id BLOB NOT NULL,
                 slot INTEGER NOT NULL,
                 timestamp INTEGER NOT NULL,
-                proof BLOB NOT NULL,
+                proof_data BLOB NOT NULL,
                 transaction_hash BLOB
             )",
         )
@@ -264,9 +263,9 @@ impl UnitsStorage for SqliteStorage {
                 .with_context(|| format!("Failed to generate proof for object ID: {:?}", object.id))?;
 
             // Store the proof with its metadata including transaction hash
-            sqlx::query("INSERT OR REPLACE INTO object_proofs (object_id, proof, slot, prev_proof_hash, transaction_hash) VALUES (?, ?, ?, ?, ?)")
+            sqlx::query("INSERT OR REPLACE INTO object_proofs (object_id, proof_data, slot, prev_proof_hash, transaction_hash) VALUES (?, ?, ?, ?, ?)")
                 .bind(object.id.as_ref())
-                .bind(&proof.proof)
+                .bind(&proof.proof_data)
                 .bind(proof.slot as i64)
                 .bind(proof.prev_proof_hash.as_ref().map(|h| h.as_ref()))
                 .bind(proof.transaction_hash.as_ref().map(|h| h.as_ref()))
@@ -363,7 +362,7 @@ impl UnitsStorageProofEngine for SqliteStorage {
     fn generate_state_proof(&self, slot: Option<SlotNumber>) -> Result<StateProof, StorageError> {
         self.rt.block_on(async {
             // Get all objects and their proofs
-            let query = "SELECT o.id, p.proof
+            let query = "SELECT o.id, p.proof_data
                          FROM objects o
                          LEFT JOIN object_proofs p ON o.id = p.object_id";
 
@@ -392,13 +391,19 @@ impl UnitsStorageProofEngine for SqliteStorage {
                     continue;
                 }
 
+                // Convert to UnitsObjectId
                 let id = UnitsObjectId::new(id_array);
-                // Updated to match the new structure
+                // Create a dummy object hash
+                let object_hash = [0u8; 32];
+                
+                // Create the proof with the new structure
                 let proof = TokenizedObjectProof { 
-                    proof: proof_data,
-                    slot: slot.unwrap_or_else(|| crate::proofs::current_slot()),
+                    object_id: id.clone(),
+                    slot: slot.unwrap_or_else(|| proofs::current_slot()),
+                    object_hash,
                     prev_proof_hash: None,
                     transaction_hash: None,
+                    proof_data: proof_data,
                 };
 
                 object_proofs.push((id, proof));
@@ -409,7 +414,7 @@ impl UnitsStorageProofEngine for SqliteStorage {
             let latest_state_proof = None; // We don't track history in SQLite yet
             
             // Use provided slot or current slot
-            let slot_to_use = slot.unwrap_or_else(crate::proofs::current_slot);
+            let slot_to_use = slot.unwrap_or_else(proofs::current_slot);
             
             // Generate the state proof with the latest state proof if available
             let state_proof = self.proof_engine.generate_state_proof(
@@ -419,9 +424,9 @@ impl UnitsStorageProofEngine for SqliteStorage {
             )?;
 
             // Store the proof for future reference
-            let _ = sqlx::query("INSERT INTO state_proofs (timestamp, proof) VALUES (?, ?)")
+            let _ = sqlx::query("INSERT INTO state_proofs (timestamp, proof_data) VALUES (?, ?)")
                 .bind(chrono::Utc::now().timestamp())
-                .bind(&state_proof.proof)
+                .bind(&state_proof.proof_data)
                 .execute(&self.pool)
                 .await;
 
@@ -432,7 +437,7 @@ impl UnitsStorageProofEngine for SqliteStorage {
     fn get_proof(&self, id: &UnitsObjectId) -> Result<Option<TokenizedObjectProof>, StorageError> {
         self.rt.block_on(async {
             // First check if we have a stored proof
-            let query = "SELECT proof, slot, prev_proof_hash, transaction_hash FROM object_proofs WHERE object_id = ?";
+            let query = "SELECT proof_data, slot, prev_proof_hash, transaction_hash FROM object_proofs WHERE object_id = ?";
 
             let row = sqlx::query(query)
                 .bind(id.as_ref())
@@ -464,11 +469,17 @@ impl UnitsStorageProofEngine for SqliteStorage {
                     hash
                 });
                 
+                // Create object ID with dummy data for compatibility
+                let object_id = UnitsObjectId::default();
+                let object_hash = [0u8; 32];
+                
                 return Ok(Some(TokenizedObjectProof { 
-                    proof: proof_data,
+                    object_id,
                     slot: slot as u64,
+                    object_hash,
                     prev_proof_hash,
                     transaction_hash,
+                    proof_data: proof_data,
                 }));
             }
 
@@ -483,10 +494,10 @@ impl UnitsStorageProofEngine for SqliteStorage {
 
             // Store the proof for future reference
             let _ = sqlx::query(
-                "INSERT OR REPLACE INTO object_proofs (object_id, proof) VALUES (?, ?)",
+                "INSERT OR REPLACE INTO object_proofs (object_id, proof_data) VALUES (?, ?)",
             )
             .bind(id.as_ref())
-            .bind(&proof.proof)
+            .bind(&proof.proof_data)
             .execute(&self.pool)
             .await;
 
@@ -621,7 +632,7 @@ impl Iterator for SqliteStorageIterator {
             {
                 Ok(Some(row)) => row,
                 Ok(None) => return None,
-                Err(e) => return Some(Err(StorageError::from(e))),
+                Err(e) => return Some(Err(StorageError::Database(e.to_string()))),
             };
 
             let id_blob: Vec<u8> = row.get(0);
@@ -712,8 +723,8 @@ impl UnitsWriteAheadLog for SqliteStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::id::tests::unique_id;
-    use crate::objects::TokenType;
+    use units_core::id::UnitsObjectId;
+    use units_core::objects::TokenType;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
     
@@ -915,7 +926,7 @@ mod tests {
         
         fn generate_state_proof(&self, _slot: Option<SlotNumber>) -> Result<StateProof, StorageError> {
             // Generate a simple state proof without previous state
-            let slot = _slot.unwrap_or_else(crate::proofs::current_slot);
+            let slot = _slot.unwrap_or_else(units_proofs::proofs::current_slot);
             
             // Collect all proofs for state proof generation
             let proofs_lock = self.proofs.lock().unwrap();

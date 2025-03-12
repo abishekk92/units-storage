@@ -1,0 +1,23 @@
+[package]
+name = "units-proofs"
+version.workspace = true
+edition.workspace = true
+description = "Cryptographic proof systems for Universal Information Tokenization System (UNITS)"
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords = ["units", "tokenization", "proofs", "cryptography"]
+
+[dependencies]
+units-core.workspace = true
+curve25519-dalek.workspace = true
+sha2.workspace = true
+blake3.workspace = true
+bincode.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

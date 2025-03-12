@@ -1,6 +1,6 @@
-use crate::error::StorageError;
-use crate::objects::TokenizedObject;
-use crate::proofs::{StateProof, TokenizedObjectProof};
+use units_core::error::StorageError;
+use units_core::objects::TokenizedObject;
+use units_proofs::{StateProof, TokenizedObjectProof};
 use crate::storage_traits::{UnitsWriteAheadLog, WALEntry};
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Write};
@@ -205,9 +205,9 @@ impl Iterator for WALEntryIterator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::id::UnitsObjectId;
-    use crate::objects::{TokenType, TokenizedObject};
-    use crate::proofs::current_slot;
+    use units_core::id::UnitsObjectId;
+    use units_core::objects::{TokenType, TokenizedObject};
+    use units_proofs::proofs::current_slot;
     use tempfile::tempdir;
     
     // Helper to create a test object
@@ -227,21 +227,26 @@ mod tests {
     
     // Helper to create a test proof
     fn create_test_proof() -> TokenizedObjectProof {
+        let object_id = UnitsObjectId::random();
+        let object_hash = [0u8; 32];
+        
         TokenizedObjectProof {
-            proof: vec![5, 6, 7, 8],
+            object_id,
             slot: current_slot(),
+            object_hash,
             prev_proof_hash: None,
             transaction_hash: None,
+            proof_data: vec![5, 6, 7, 8],
         }
     }
     
     // Helper to create a test state proof
     fn create_test_state_proof() -> StateProof {
         StateProof {
-            proof: vec![9, 10, 11, 12],
             slot: current_slot(),
-            prev_proof_hash: None,
-            included_objects: vec![UnitsObjectId::random()],
+            prev_state_proof_hash: None,
+            object_ids: vec![UnitsObjectId::random()],
+            proof_data: vec![9, 10, 11, 12],
         }
     }
     

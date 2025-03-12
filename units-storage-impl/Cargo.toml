@@ -1,0 +1,35 @@
+[package]
+name = "units-storage-impl"
+version.workspace = true
+edition.workspace = true
+description = "Storage implementations for Universal Information Tokenization System (UNITS)"
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords = ["storage", "database", "units", "tokenization"]
+categories = ["database-implementations", "cryptography"]
+
+[dependencies]
+units-core.workspace = true
+units-proofs.workspace = true
+curve25519-dalek.workspace = true
+bincode.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+log.workspace = true
+
+# Optional dependencies
+sqlx = { workspace = true, optional = true }
+rocksdb = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+chrono.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[features]
+default = ["sqlite"]
+sqlite = ["dep:sqlx", "dep:tokio"]
+rocksdb = ["dep:rocksdb"]
+all = ["sqlite", "rocksdb"]
