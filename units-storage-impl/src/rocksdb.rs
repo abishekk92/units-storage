@@ -26,7 +26,6 @@ use log;
 use rocksdb::{ColumnFamilyDescriptor, Options, DB};
 #[cfg(feature = "rocksdb")]
 use std::{
-    convert::TryInto,
     fmt::Debug,
     path::{Path, PathBuf},
     sync::Arc,
@@ -56,6 +55,7 @@ fn make_history_key(id: &UnitsObjectId, slot: SlotNumber) -> Vec<u8> {
 }
 
 /// Extract object ID and slot from a history key
+#[cfg_attr(not(test), allow(dead_code))]
 fn parse_history_key(key: &[u8]) -> Option<(UnitsObjectId, SlotNumber)> {
     // Find the separator
     let separator_pos = key.iter().position(|&b| b == b':')?;
@@ -971,6 +971,8 @@ mod tests {
         state_proofs: Arc<Mutex<HashMap<SlotNumber, StateProof>>>,
         current_slot: Arc<Mutex<SlotNumber>>,
         proof_engine: LatticeProofEngine,
+        // Track historical versions of objects for get_at_slot
+        object_history: Arc<Mutex<HashMap<UnitsObjectId, Vec<(SlotNumber, TokenizedObject)>>>>,
     }
     
     impl MockRocksDbStorage {
@@ -981,6 +983,7 @@ mod tests {
                 state_proofs: Arc::new(Mutex::new(HashMap::new())),
                 current_slot: Arc::new(Mutex::new(1000)), // Start at a base slot number
                 proof_engine: LatticeProofEngine::new(),
+                object_history: Arc::new(Mutex::new(HashMap::new())),
             }
         }
         
@@ -1165,8 +1168,25 @@ mod tests {
             }
         }
         
-        fn get_at_slot(&self, id: &UnitsObjectId, _slot: SlotNumber) -> Result<Option<TokenizedObject>, StorageError> {
-            // For testing, just return the current object state
+        fn get_at_slot(&self, id: &UnitsObjectId, slot: SlotNumber) -> Result<Option<TokenizedObject>, StorageError> {
+            // For testing, find the object state as it was at the given slot
+            // Look through the history to find the version at or before the requested slot
+            let mut object_history = self.object_history.lock().unwrap();
+            
+            if let Some(history) = object_history.get_mut(id) {
+                // Sort by slot in descending order
+                history.sort_by(|(a_slot, _), (b_slot, _)| b_slot.cmp(a_slot));
+                
+                // Find the most recent object state at or before the requested slot
+                for (obj_slot, obj) in history.iter() {
+                    if *obj_slot <= slot {
+                        return Ok(Some(obj.clone()));
+                    }
+                }
+            }
+            
+            // If we don't have history or a version at or before the slot, try current state
+            // This is needed because we might not have saved history for the very first object state
             self.get(id)
         }
         
@@ -1191,6 +1211,13 @@ mod tests {
             {
                 let mut objects = self.objects.lock().unwrap();
                 objects.insert(object.id, object.clone());
+            }
+            
+            // Store the object in history with its slot
+            {
+                let mut object_history = self.object_history.lock().unwrap();
+                let history_vec = object_history.entry(object.id).or_insert_with(Vec::new);
+                history_vec.push((proof.slot, object.clone()));
             }
             
             // Store the proof
@@ -1232,6 +1259,23 @@ mod tests {
                 objects.remove(id);
             }
             
+            // Add a tombstone entry to history
+            {
+                let mut object_history = self.object_history.lock().unwrap();
+                let history_vec = object_history.entry(*id).or_insert_with(Vec::new);
+                
+                // Create a tombstone object (empty data) to mark deletion
+                let tombstone = TokenizedObject {
+                    id: *id,
+                    holder: UnitsObjectId::default(),
+                    token_type: TokenType::Native,
+                    token_manager: UnitsObjectId::default(),
+                    data: Vec::new(),
+                };
+                
+                history_vec.push((proof.slot, tombstone));
+            }
+            
             // Store the proof
             {
                 let mut proofs = self.proofs.lock().unwrap();
@@ -1271,9 +1315,9 @@ mod tests {
         let storage = MockRocksDbStorage::new();
 
         // Create test object
-        let id = unique_id();
-        let holder = unique_id();
-        let token_manager = unique_id();
+        let id = UnitsObjectId::unique_id_for_tests();
+        let holder = UnitsObjectId::unique_id_for_tests();
+        let token_manager = UnitsObjectId::unique_id_for_tests();
         let obj = TokenizedObject {
             id,
             holder,
@@ -1310,18 +1354,18 @@ mod tests {
 
         // Create test objects
         let obj1 = TokenizedObject {
-            id: unique_id(),
-            holder: unique_id(),
+            id: UnitsObjectId::unique_id_for_tests(),
+            holder: UnitsObjectId::unique_id_for_tests(),
             token_type: TokenType::Native,
-            token_manager: unique_id(),
+            token_manager: UnitsObjectId::unique_id_for_tests(),
             data: vec![1, 2, 3, 4],
         };
 
         let obj2 = TokenizedObject {
-            id: unique_id(),
-            holder: unique_id(),
+            id: UnitsObjectId::unique_id_for_tests(),
+            holder: UnitsObjectId::unique_id_for_tests(),
             token_type: TokenType::Custodial,
-            token_manager: unique_id(),
+            token_manager: UnitsObjectId::unique_id_for_tests(),
             data: vec![5, 6, 7, 8],
         };
 
@@ -1401,9 +1445,9 @@ mod tests {
         let storage = MockRocksDbStorage::new();
 
         // Create a test object
-        let id = unique_id();
-        let holder = unique_id();
-        let token_manager = unique_id();
+        let id = UnitsObjectId::unique_id_for_tests();
+        let holder = UnitsObjectId::unique_id_for_tests();
+        let token_manager = UnitsObjectId::unique_id_for_tests();
         let mut obj = TokenizedObject {
             id,
             holder,
@@ -1468,12 +1512,47 @@ mod tests {
         }
         
         // Test with non-existent object ID
-        let nonexistent_id = unique_id();
+        let nonexistent_id = UnitsObjectId::unique_id_for_tests();
         let result = storage.verify_proof_chain(&nonexistent_id, start_slot, end_slot);
         assert!(result.is_err());
         match result {
             Err(StorageError::ProofNotFound(_)) => {}, // Expected error
             _ => panic!("Expected ProofNotFound error for non-existent object ID"),
         }
+    }
+    
+    #[test]
+    fn test_history_key_functions() {
+        // Create a test ID and slot
+        let id = UnitsObjectId::unique_id_for_tests();
+        let slot: SlotNumber = 12345;
+        
+        // Generate a history key
+        let key = make_history_key(&id, slot);
+        
+        // Parse the key back
+        let parsed = parse_history_key(&key);
+        assert!(parsed.is_some());
+        
+        // Check that parsed values match original values
+        let (parsed_id, parsed_slot) = parsed.unwrap();
+        assert_eq!(parsed_id, id);
+        assert_eq!(parsed_slot, slot);
+        
+        // Test parsing with invalid inputs
+        
+        // Test with key that's too short
+        let short_key = vec![1, 2, 3];
+        assert!(parse_history_key(&short_key).is_none());
+        
+        // Test with key that has no separator
+        let no_separator = vec![0; 40];
+        assert!(parse_history_key(&no_separator).is_none());
+        
+        // Test with key that has separator but wrong format
+        let mut bad_format = vec![0; 32];
+        bad_format.push(b':');
+        bad_format.push(1);
+        assert!(parse_history_key(&bad_format).is_none());
     }
 }
