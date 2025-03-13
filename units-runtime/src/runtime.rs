@@ -67,10 +67,7 @@ pub trait Runtime {
     ///
     /// # Returns
     /// True if the rollback was successful, error message otherwise
-    fn rollback_transaction(&self, _transaction_hash: &TransactionHash) -> Result<bool, String> {
-        // Default implementation returns an error since not all runtimes support rollback
-        Err("Transaction rollback not supported by this runtime".to_string())
-    }
+    fn rollback_transaction(&self, _transaction_hash: &TransactionHash) -> Result<bool, String>;
 
     /// Update the commitment level of a transaction
     ///
