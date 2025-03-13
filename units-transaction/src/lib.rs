@@ -1,8 +1,82 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use units_core::id::UnitsObjectId;
 use units_core::objects::TokenizedObject;
 use units_proofs::{SlotNumber, TokenizedObjectProof};
+
+/// Information about a lock held on an object
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LockInfo {
+    /// The ID of the object being locked
+    pub object_id: UnitsObjectId,
+    
+    /// The type of lock held (read or write)
+    pub lock_type: LockType,
+    
+    /// The hash of the transaction that holds this lock
+    pub transaction_hash: TransactionHash,
+    
+    /// When the lock was acquired (Unix timestamp)
+    pub acquired_at: u64,
+    
+    /// Optional timeout for the lock (in milliseconds)
+    pub timeout_ms: Option<u64>,
+}
+
+/// Iterator for traversing lock information
+pub trait UnitsLockIterator: Iterator<Item = Result<LockInfo, String>> {}
+
+// Forward declaration of the PersistentLockManager trait
+// This is defined in units-storage-impl::storage_traits
+pub trait PersistentLockManager: std::fmt::Debug {
+    /// Acquire a lock on an object for a transaction
+    fn acquire_lock(
+        &self,
+        object_id: &UnitsObjectId,
+        lock_type: LockType,
+        transaction_hash: &TransactionHash,
+        timeout_ms: Option<u64>,
+    ) -> Result<bool, String>;
+    
+    /// Release a lock on an object for a transaction
+    fn release_lock(
+        &self,
+        object_id: &UnitsObjectId,
+        transaction_hash: &TransactionHash,
+    ) -> Result<bool, String>;
+    
+    /// Check if a lock exists and get its information
+    fn get_lock_info(&self, object_id: &UnitsObjectId) -> Result<Option<LockInfo>, String>;
+    
+    /// Check if a transaction can acquire a lock on an object
+    fn can_acquire_lock(
+        &self,
+        object_id: &UnitsObjectId,
+        intent: AccessIntent,
+        transaction_hash: &TransactionHash,
+    ) -> Result<bool, String>;
+    
+    /// Release all locks held by a transaction
+    fn release_transaction_locks(
+        &self,
+        transaction_hash: &TransactionHash,
+    ) -> Result<usize, String>;
+    
+    /// Get all locks held by a transaction
+    fn get_transaction_locks(
+        &self,
+        transaction_hash: &TransactionHash,
+    ) -> Box<dyn UnitsLockIterator + '_>;
+    
+    /// Get all locks on an object
+    fn get_object_locks(
+        &self,
+        object_id: &UnitsObjectId,
+    ) -> Box<dyn UnitsLockIterator + '_>;
+    
+    /// Check for expired locks and release them
+    fn cleanup_expired_locks(&self) -> Result<usize, String>;
+}
 
 /// A transaction hash uniquely identifies a transaction in the system
 pub type TransactionHash = [u8; 32];
@@ -44,14 +118,242 @@ pub enum AccessIntent {
     Write,
 }
 
+impl AccessIntent {
+    /// Acquire the respective lock on the object
+    /// 
+    /// For Read intent, acquires a shared read lock
+    /// For Write intent, acquires an exclusive write lock
+    /// 
+    /// # Parameters
+    /// * `object_id` - The ID of the object to lock
+    /// * `transaction_hash` - The hash of the transaction acquiring the lock
+    /// * `lock_manager` - The persistent lock manager to use
+    /// 
+    /// # Returns
+    /// A lock guard that will be released when dropped, or an error if the lock couldn't be acquired
+    pub fn acquire_lock<'a>(
+        &self,
+        object_id: &UnitsObjectId,
+        transaction_hash: &TransactionHash,
+        lock_manager: &'a dyn PersistentLockManager,
+    ) -> Result<ObjectLockGuard<'a>, String> {
+        // Convert AccessIntent to LockType
+        let lock_type = match self {
+            AccessIntent::Read => LockType::Read,
+            AccessIntent::Write => LockType::Write,
+        };
+        
+        ObjectLockGuard::new_with_manager(*object_id, lock_type, *transaction_hash, lock_manager)
+    }
+    
+    /// Create an in-memory lock (for testing only)
+    #[cfg(test)]
+    pub fn create_in_memory_lock(
+        &self,
+        object_id: &UnitsObjectId,
+        transaction_hash: &TransactionHash,
+    ) -> ObjectLockGuard<'static> {
+        let lock_type = match self {
+            AccessIntent::Read => LockType::Read,
+            AccessIntent::Write => LockType::Write,
+        };
+        
+        ObjectLockGuard::new_in_memory(*object_id, lock_type, *transaction_hash)
+    }
+}
+
+/// Type of lock held on an object
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LockType {
+    /// Shared read lock
+    Read,
+    /// Exclusive write lock
+    Write,
+}
+
+/// Guard that holds a lock on an object and releases it when dropped
+#[derive(Debug)]
+pub struct ObjectLockGuard<'a> {
+    /// ID of the object that is locked
+    object_id: UnitsObjectId,
+    
+    /// Type of lock held
+    lock_type: LockType,
+    
+    /// Hash of the transaction that holds the lock
+    transaction_hash: TransactionHash,
+    
+    /// Reference to the lock manager
+    lock_manager: Option<&'a dyn PersistentLockManager>,
+    
+    /// Whether the lock has been explicitly released
+    released: bool,
+}
+
+impl<'a> ObjectLockGuard<'a> {
+    /// Create a new lock guard with a lock manager
+    pub fn new_with_manager(
+        object_id: UnitsObjectId,
+        lock_type: LockType,
+        transaction_hash: TransactionHash,
+        lock_manager: &'a dyn PersistentLockManager,
+    ) -> Result<Self, String> {
+        // Try to acquire the lock using the persistent lock manager
+        match lock_manager.acquire_lock(&object_id, lock_type, &transaction_hash, None) {
+            Ok(true) => Ok(Self {
+                object_id,
+                lock_type,
+                transaction_hash,
+                lock_manager: Some(lock_manager),
+                released: false,
+            }),
+            Ok(false) => Err(format!("Could not acquire {:?} lock on object {:?} for transaction {:?}. Lock conflict detected.", 
+                                   lock_type, object_id, transaction_hash)),
+            Err(e) => Err(format!("Error acquiring lock: {}", e)),
+        }
+    }
+    
+    /// Create a new in-memory lock guard (for testing only)
+    #[cfg(test)]
+    pub fn new_in_memory(
+        object_id: UnitsObjectId,
+        lock_type: LockType,
+        transaction_hash: TransactionHash,
+    ) -> Self {
+        // For testing, we create a lock without a manager
+        Self {
+            object_id,
+            lock_type,
+            transaction_hash,
+            lock_manager: None,
+            released: false,
+        }
+    }
+    
+    /// Explicitly release the lock before the guard is dropped
+    pub fn release(&mut self) -> Result<bool, String> {
+        if self.released {
+            return Ok(false); // Already released
+        }
+        
+        if let Some(manager) = self.lock_manager {
+            match manager.release_lock(&self.object_id, &self.transaction_hash) {
+                Ok(released) => {
+                    self.released = true;
+                    Ok(released)
+                },
+                Err(e) => Err(format!("Error releasing lock: {}", e)),
+            }
+        } else {
+            // In-memory lock, just mark as released
+            self.released = true;
+            Ok(true)
+        }
+    }
+    
+    /// Get the object ID
+    pub fn object_id(&self) -> &UnitsObjectId {
+        &self.object_id
+    }
+    
+    /// Get the lock type
+    pub fn lock_type(&self) -> LockType {
+        self.lock_type
+    }
+    
+    /// Get the transaction hash
+    pub fn transaction_hash(&self) -> &TransactionHash {
+        &self.transaction_hash
+    }
+}
+
+impl<'a> Drop for ObjectLockGuard<'a> {
+    fn drop(&mut self) {
+        if !self.released {
+            if let Some(manager) = self.lock_manager {
+                // Try to release the lock, ignore any errors since we're dropping
+                let _ = manager.release_lock(&self.object_id, &self.transaction_hash);
+            }
+            // If no manager, nothing to do for in-memory locks
+        }
+    }
+}
+
 /// A structure representing an instruction within a transaction
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Instruction {
     /// The binary representation of the instruction
     pub data: Vec<u8>,
-    
+
     /// The objects this instruction intends to access and their access intents
     pub object_intents: Vec<(UnitsObjectId, AccessIntent)>,
+}
+
+impl Instruction {
+    /// Acquire all locks needed for this instruction
+    /// 
+    /// This acquires locks for all objects according to their access intents.
+    /// Read intents acquire shared read locks, while write intents acquire exclusive write locks.
+    /// 
+    /// # Parameters
+    /// * `transaction_hash` - The hash of the transaction acquiring the locks
+    /// * `lock_manager` - The persistent lock manager to use
+    /// 
+    /// # Returns
+    /// A vector of lock guards or errors for each lock attempt
+    pub fn acquire_locks<'a>(
+        &self,
+        transaction_hash: &TransactionHash,
+        lock_manager: &'a dyn PersistentLockManager,
+    ) -> Vec<Result<ObjectLockGuard<'a>, String>> {
+        self.object_intents
+            .iter()
+            .map(|(object_id, intent)| {
+                intent.acquire_lock(object_id, transaction_hash, lock_manager)
+            })
+            .collect()
+    }
+    
+    /// Check if all locks needed for this instruction can be acquired
+    /// 
+    /// # Parameters
+    /// * `transaction_hash` - The hash of the transaction checking lock availability
+    /// * `lock_manager` - The persistent lock manager to use
+    /// 
+    /// # Returns
+    /// True if all locks can be acquired, false otherwise
+    pub fn can_acquire_locks<L>(
+        &self,
+        transaction_hash: &TransactionHash,
+        lock_manager: &L,
+    ) -> Result<bool, String>
+    where
+        L: PersistentLockManager + ?Sized,
+    {
+        for (object_id, intent) in &self.object_intents {
+            match lock_manager.can_acquire_lock(object_id, *intent, transaction_hash) {
+                Ok(false) => return Ok(false),
+                Err(e) => return Err(format!("Error checking lock availability: {}", e)),
+                _ => continue,
+            }
+        }
+        
+        Ok(true)
+    }
+    
+    /// Create in-memory locks for testing
+    #[cfg(test)]
+    pub fn create_in_memory_locks(
+        &self,
+        transaction_hash: &TransactionHash,
+    ) -> Vec<ObjectLockGuard<'static>> {
+        self.object_intents
+            .iter()
+            .map(|(object_id, intent)| {
+                intent.create_in_memory_lock(object_id, transaction_hash)
+            })
+            .collect()
+    }
 }
 
 /// Transaction that contains multiple instructions to be executed
@@ -59,10 +361,10 @@ pub struct Instruction {
 pub struct Transaction {
     /// List of instructions to be executed as part of this transaction
     pub instructions: Vec<Instruction>,
-    
+
     /// The hash of the transaction
     pub hash: TransactionHash,
-    
+
     /// The commitment level of this transaction
     pub commitment_level: CommitmentLevel,
 }
@@ -76,20 +378,175 @@ impl Transaction {
             commitment_level: CommitmentLevel::Processing,
         }
     }
-    
+
     /// Mark the transaction as committed
     pub fn commit(&mut self) {
         self.commitment_level = CommitmentLevel::Committed;
     }
-    
+
     /// Mark the transaction as failed
     pub fn fail(&mut self) {
         self.commitment_level = CommitmentLevel::Failed;
     }
-    
+
     /// Check if the transaction can be rolled back
     pub fn can_rollback(&self) -> bool {
         self.commitment_level == CommitmentLevel::Processing
+    }
+    
+    /// Acquire all locks needed for this transaction
+    /// 
+    /// This acquires locks for all objects according to their access intents in all instructions.
+    /// Read intents acquire shared read locks, while write intents acquire exclusive write locks.
+    /// 
+    /// # Parameters
+    /// * `lock_manager` - The persistent lock manager to use
+    /// 
+    /// # Returns
+    /// A result containing a vector of lock guards if all locks were acquired successfully,
+    /// or an error if any lock could not be acquired
+    pub fn acquire_locks<'a>(
+        &self,
+        lock_manager: &'a dyn PersistentLockManager,
+    ) -> Result<Vec<ObjectLockGuard<'a>>, String> {
+        let mut locks = Vec::new();
+        let mut locked_objects = std::collections::HashMap::new();
+        
+        for instruction in &self.instructions {
+            for (object_id, intent) in &instruction.object_intents {
+                // Check if we've already locked this object
+                if let Some(existing_intent) = locked_objects.get(object_id) {
+                    // If we already have a write lock, or if we only need a read lock, skip
+                    if *existing_intent == AccessIntent::Write || *intent == AccessIntent::Read {
+                        continue;
+                    }
+                    // Otherwise we had a read lock but need a write lock - upgrade needed
+                    
+                    // Release the read lock first (find it in our locks and remove it)
+                    if let Some(position) = locks.iter().position(|lock: &ObjectLockGuard<'a>| lock.object_id() == object_id) {
+                        let mut lock = locks.remove(position);
+                        if let Err(e) = lock.release() {
+                            // If we can't release the read lock, we can't upgrade
+                            return Err(format!("Failed to release read lock for upgrade: {}", e));
+                        }
+                    }
+                }
+                
+                // Acquire the lock
+                match intent.acquire_lock(object_id, &self.hash, lock_manager) {
+                    Ok(lock) => {
+                        locks.push(lock);
+                        locked_objects.insert(*object_id, *intent);
+                    },
+                    Err(e) => {
+                        // Release all locks we've acquired so far
+                        for lock in &mut locks {
+                            let _ = lock.release(); // Ignore errors during cleanup
+                        }
+                        return Err(format!("Failed to acquire lock on object {:?}: {}", object_id, e));
+                    }
+                }
+            }
+        }
+        
+        Ok(locks)
+    }
+    
+    /// Execute the transaction with automatic lock acquisition and release
+    /// 
+    /// This is a convenience method that:
+    /// 1. Acquires all needed locks
+    /// 2. Calls the provided execution function
+    /// 3. Releases all locks when done
+    /// 
+    /// # Parameters
+    /// * `lock_manager` - The persistent lock manager to use
+    /// * `exec_fn` - Function that receives a reference to this transaction and performs execution
+    /// 
+    /// # Returns
+    /// A result containing the result of the execution function if successful,
+    /// or an error if any lock could not be acquired
+    pub fn execute_with_locks<'a, F, R>(
+        &self,
+        lock_manager: &'a dyn PersistentLockManager,
+        exec_fn: F,
+    ) -> Result<R, String>
+    where
+        F: FnOnce(&Self) -> R,
+    {
+        // Acquire all locks
+        let _locks = self.acquire_locks(lock_manager)?;
+        
+        // Execute the transaction
+        let result = exec_fn(self);
+        
+        // Locks are automatically released when _locks goes out of scope
+        Ok(result)
+    }
+    
+    /// Create in-memory locks for testing
+    #[cfg(test)]
+    pub fn create_in_memory_locks(&self) -> Vec<ObjectLockGuard<'static>> {
+        let mut locks = Vec::new();
+        let mut locked_objects = std::collections::HashMap::new();
+        
+        for instruction in &self.instructions {
+            for (object_id, intent) in &instruction.object_intents {
+                // Check if we've already locked this object
+                if let Some(existing_intent) = locked_objects.get(object_id) {
+                    // If we already have a write lock, or if we only need a read lock, skip
+                    if *existing_intent == AccessIntent::Write || *intent == AccessIntent::Read {
+                        continue;
+                    }
+                }
+                
+                // Create in-memory lock
+                locks.push(intent.create_in_memory_lock(object_id, &self.hash));
+                // Remember what we locked
+                locked_objects.insert(*object_id, *intent);
+            }
+        }
+        
+        locks
+    }
+    
+    /// Check if all locks needed for this transaction can be acquired
+    /// 
+    /// # Parameters
+    /// * `lock_manager` - The persistent lock manager to use
+    /// 
+    /// # Returns
+    /// True if all locks can be acquired, false otherwise
+    pub fn can_acquire_all_locks(
+        &self,
+        lock_manager: &dyn PersistentLockManager,
+    ) -> Result<bool, String> {
+        let mut locked_objects = std::collections::HashMap::new();
+        
+        for instruction in &self.instructions {
+            for (object_id, intent) in &instruction.object_intents {
+                // Check if we've already checked this object
+                if let Some(existing_intent) = locked_objects.get(object_id) {
+                    // If we already have a write lock, or if we only need a read lock, skip
+                    if *existing_intent == AccessIntent::Write || *intent == AccessIntent::Read {
+                        continue;
+                    }
+                    // Otherwise we need to upgrade from read to write - check if we can
+                }
+                
+                // Check if we can acquire the lock
+                match lock_manager.can_acquire_lock(object_id, *intent, &self.hash) {
+                    Ok(false) => return Ok(false),
+                    Err(e) => return Err(format!("Error checking lock availability: {}", e)),
+                    Ok(true) => {
+                        // Remember what we checked
+                        locked_objects.insert(*object_id, *intent);
+                    }
+                }
+            }
+        }
+        
+        Ok(true)
     }
 }
 
@@ -217,5 +674,610 @@ impl TransactionReceipt {
     /// Get the number of objects modified by this transaction
     pub fn object_count(&self) -> usize {
         self.object_proofs.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use units_core::id::UnitsObjectId;
+    use units_proofs::{SlotNumber, TokenizedObjectProof};
+
+    #[test]
+    fn test_transaction_receipt_creation() {
+        // Create a transaction receipt
+        let transaction_hash = [1u8; 32];
+        let slot = 42;
+        let success = true;
+        let timestamp = 123456789;
+
+        let mut receipt = TransactionReceipt::new(transaction_hash, slot, success, timestamp);
+
+        // Verify the receipt fields
+        assert_eq!(receipt.transaction_hash, transaction_hash);
+        assert_eq!(receipt.slot, slot);
+        assert_eq!(receipt.success, success);
+        assert_eq!(receipt.timestamp, timestamp);
+        assert_eq!(receipt.object_count(), 0);
+        assert_eq!(receipt.effects.len(), 0);
+
+        // Add some object proofs
+        let object_id1 = UnitsObjectId::unique_id_for_tests();
+        let object_id2 = UnitsObjectId::unique_id_for_tests();
+
+        let proof1 = TokenizedObjectProof {
+            object_id: object_id1,
+            slot,
+            object_hash: [1u8; 32],
+            prev_proof_hash: None,
+            transaction_hash: Some(transaction_hash),
+            proof_data: vec![1, 2, 3],
+        };
+
+        let proof2 = TokenizedObjectProof {
+            object_id: object_id2,
+            slot,
+            object_hash: [2u8; 32],
+            prev_proof_hash: None,
+            transaction_hash: Some(transaction_hash),
+            proof_data: vec![4, 5, 6],
+        };
+
+        receipt.add_proof(object_id1, proof1.clone());
+        receipt.add_proof(object_id2, proof2.clone());
+
+        // Verify the proofs were added
+        assert_eq!(receipt.object_count(), 2);
+
+        // Check if objects exist in the collection
+        assert!(receipt.object_proofs.contains_key(&object_id1));
+
+        // Test setting an error
+        let error_msg = "Transaction failed".to_string();
+        receipt.set_error(error_msg.clone());
+
+        assert_eq!(receipt.success, false);
+        assert_eq!(receipt.error_message, Some(error_msg));
+    }
+    
+    #[test]
+    fn test_access_intent_locking() {
+        // Create test objects
+        let object_id1 = UnitsObjectId::unique_id_for_tests();
+        let object_id2 = UnitsObjectId::unique_id_for_tests();
+        let transaction_hash = [1u8; 32];
+        
+        // Test basic intent lock acquisition
+        let read_intent = AccessIntent::Read;
+        let write_intent = AccessIntent::Write;
+        
+        // Create in-memory locks for testing
+        let read_lock = read_intent.create_in_memory_lock(&object_id1, &transaction_hash);
+        let write_lock = write_intent.create_in_memory_lock(&object_id2, &transaction_hash);
+        
+        // Check lock types
+        assert_eq!(read_lock.lock_type(), LockType::Read);
+        assert_eq!(write_lock.lock_type(), LockType::Write);
+        
+        // Check object IDs
+        assert_eq!(*read_lock.object_id(), object_id1);
+        assert_eq!(*write_lock.object_id(), object_id2);
+    }
+    
+    #[test]
+    fn test_instruction_locking() {
+        // Create test objects
+        let object_id1 = UnitsObjectId::unique_id_for_tests();
+        let object_id2 = UnitsObjectId::unique_id_for_tests();
+        let transaction_hash = [1u8; 32];
+        
+        // Create an instruction with multiple intents
+        let instruction = Instruction {
+            data: vec![1, 2, 3],
+            object_intents: vec![
+                (object_id1, AccessIntent::Read),
+                (object_id2, AccessIntent::Write),
+            ],
+        };
+        
+        // Create in-memory locks for testing
+        let locks = instruction.create_in_memory_locks(&transaction_hash);
+        
+        // Verify we got two locks
+        assert_eq!(locks.len(), 2);
+        
+        // Verify lock types
+        let mut read_locks = 0;
+        let mut write_locks = 0;
+        
+        for lock in &locks {
+            match lock.lock_type() {
+                LockType::Read => read_locks += 1,
+                LockType::Write => write_locks += 1,
+            }
+        }
+        
+        assert_eq!(read_locks, 1);
+        assert_eq!(write_locks, 1);
+    }
+    
+    #[test]
+    fn test_transaction_locking() {
+        // Create test objects
+        let object_id1 = UnitsObjectId::unique_id_for_tests();
+        let object_id2 = UnitsObjectId::unique_id_for_tests();
+        let object_id3 = UnitsObjectId::unique_id_for_tests();
+        
+        // Create a transaction with multiple instructions
+        let instr1 = Instruction {
+            data: vec![1, 2, 3],
+            object_intents: vec![
+                (object_id1, AccessIntent::Read),
+                (object_id2, AccessIntent::Write),
+            ],
+        };
+        
+        let instr2 = Instruction {
+            data: vec![4, 5, 6],
+            object_intents: vec![
+                (object_id1, AccessIntent::Read),  // Same as instr1, should be de-duped
+                (object_id3, AccessIntent::Write),
+            ],
+        };
+        
+        let transaction = Transaction::new(
+            vec![instr1, instr2],
+            [1u8; 32],
+        );
+        
+        // Create in-memory locks for testing
+        let locks = transaction.create_in_memory_locks();
+        
+        // Verify we got 3 locks (not 4) because we deduplicate
+        assert_eq!(locks.len(), 3);
+    }
+    
+    #[test]
+    fn test_lock_upgrade() {
+        // Create a mock persistent lock manager for testing
+        #[derive(Debug)]
+        struct MockLockManager {
+            acquired_locks: std::cell::RefCell<Vec<(UnitsObjectId, LockType, TransactionHash)>>,
+        }
+        
+        impl MockLockManager {
+            fn new() -> Self {
+                Self {
+                    acquired_locks: std::cell::RefCell::new(Vec::new()),
+                }
+            }
+        }
+        
+        impl PersistentLockManager for MockLockManager {
+            fn acquire_lock(
+                &self,
+                object_id: &UnitsObjectId,
+                lock_type: LockType,
+                transaction_hash: &TransactionHash,
+                _timeout_ms: Option<u64>,
+            ) -> Result<bool, String> {
+                // Check if this object is already locked
+                let locks = self.acquired_locks.borrow();
+                
+                // If it's already locked with Write by someone else, we can't lock it
+                let conflict = locks.iter().any(|(id, lt, tx)| {
+                    *id == *object_id 
+                    && *lt == LockType::Write 
+                    && *tx != *transaction_hash
+                });
+                
+                if conflict {
+                    return Ok(false);
+                }
+                
+                // If we're trying to get a Write lock, check if anyone else has any lock
+                if lock_type == LockType::Write {
+                    let conflict = locks.iter().any(|(id, _, tx)| {
+                        *id == *object_id && *tx != *transaction_hash
+                    });
+                    
+                    if conflict {
+                        return Ok(false);
+                    }
+                }
+                
+                // No conflicts, we can acquire the lock
+                drop(locks); // Release the borrow
+                self.acquired_locks.borrow_mut().push((*object_id, lock_type, *transaction_hash));
+                Ok(true)
+            }
+            
+            fn release_lock(
+                &self,
+                object_id: &UnitsObjectId,
+                transaction_hash: &TransactionHash,
+            ) -> Result<bool, String> {
+                let mut locks = self.acquired_locks.borrow_mut();
+                let original_len = locks.len();
+                
+                // Remove all locks on this object by this transaction
+                locks.retain(|(id, _, tx)| !(*id == *object_id && *tx == *transaction_hash));
+                
+                Ok(locks.len() < original_len)
+            }
+            
+            fn get_lock_info(&self, object_id: &UnitsObjectId) -> Result<Option<LockInfo>, String> {
+                let locks = self.acquired_locks.borrow();
+                
+                // Find the first lock on this object
+                for (id, lock_type, tx) in locks.iter() {
+                    if *id == *object_id {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                            
+                        return Ok(Some(LockInfo {
+                            object_id: *id,
+                            lock_type: *lock_type,
+                            transaction_hash: *tx,
+                            acquired_at: now,
+                            timeout_ms: None,
+                        }));
+                    }
+                }
+                
+                Ok(None)
+            }
+            
+            fn can_acquire_lock(
+                &self,
+                object_id: &UnitsObjectId,
+                intent: AccessIntent,
+                transaction_hash: &TransactionHash,
+            ) -> Result<bool, String> {
+                let lock_type = match intent {
+                    AccessIntent::Read => LockType::Read,
+                    AccessIntent::Write => LockType::Write,
+                };
+                
+                // Use the same logic as acquire_lock but don't actually acquire
+                let locks = self.acquired_locks.borrow();
+                
+                // If it's already locked with Write by someone else, we can't lock it
+                let conflict = locks.iter().any(|(id, lt, tx)| {
+                    *id == *object_id 
+                    && *lt == LockType::Write 
+                    && *tx != *transaction_hash
+                });
+                
+                if conflict {
+                    return Ok(false);
+                }
+                
+                // If we're trying to get a Write lock, check if anyone else has any lock
+                if lock_type == LockType::Write {
+                    let conflict = locks.iter().any(|(id, _, tx)| {
+                        *id == *object_id && *tx != *transaction_hash
+                    });
+                    
+                    if conflict {
+                        return Ok(false);
+                    }
+                }
+                
+                Ok(true)
+            }
+            
+            fn release_transaction_locks(
+                &self,
+                transaction_hash: &TransactionHash,
+            ) -> Result<usize, String> {
+                let mut locks = self.acquired_locks.borrow_mut();
+                let original_len = locks.len();
+                
+                // Remove all locks by this transaction
+                locks.retain(|(_, _, tx)| *tx != *transaction_hash);
+                
+                Ok(original_len - locks.len())
+            }
+            
+            fn get_transaction_locks(
+                &self,
+                _transaction_hash: &TransactionHash,
+            ) -> Box<dyn UnitsLockIterator + '_> {
+                // Not needed for this test
+                unimplemented!()
+            }
+            
+            fn get_object_locks(
+                &self,
+                _object_id: &UnitsObjectId,
+            ) -> Box<dyn UnitsLockIterator + '_> {
+                // Not needed for this test
+                unimplemented!()
+            }
+            
+            fn cleanup_expired_locks(&self) -> Result<usize, String> {
+                // Not needed for this test
+                Ok(0)
+            }
+        }
+        
+        // Create test object
+        let object_id = UnitsObjectId::unique_id_for_tests();
+        
+        // Create a transaction with an object that needs lock upgrade
+        let instr1 = Instruction {
+            data: vec![1, 2, 3],
+            object_intents: vec![
+                (object_id, AccessIntent::Read),  // First we read
+            ],
+        };
+        
+        let instr2 = Instruction {
+            data: vec![4, 5, 6],
+            object_intents: vec![
+                (object_id, AccessIntent::Write), // Then we write, needs upgrade
+            ],
+        };
+        
+        let transaction = Transaction::new(
+            vec![instr1, instr2],
+            [1u8; 32],
+        );
+        
+        // Create the lock manager
+        let lock_manager = MockLockManager::new();
+        
+        // Acquire locks (this should include lock upgrade)
+        let locks = transaction.acquire_locks(&lock_manager).unwrap();
+        
+        // We should have one lock - after upgrade, it should be a write lock
+        assert_eq!(locks.len(), 1);
+        assert_eq!(locks[0].lock_type(), LockType::Write);
+    }
+    
+    #[test]
+    fn test_persistent_locking() {
+        // Create a mock persistent lock manager for testing
+        #[derive(Debug)]
+        struct MockLockManager {
+            acquired_locks: std::cell::RefCell<Vec<(UnitsObjectId, LockType, TransactionHash)>>,
+        }
+        
+        impl MockLockManager {
+            fn new() -> Self {
+                Self {
+                    acquired_locks: std::cell::RefCell::new(Vec::new()),
+                }
+            }
+        }
+        
+        impl PersistentLockManager for MockLockManager {
+            fn acquire_lock(
+                &self,
+                object_id: &UnitsObjectId,
+                lock_type: LockType,
+                transaction_hash: &TransactionHash,
+                _timeout_ms: Option<u64>,
+            ) -> Result<bool, String> {
+                // Check if this object is already locked
+                let locks = self.acquired_locks.borrow();
+                
+                // If it's already locked with Write by someone else, we can't lock it
+                let conflict = locks.iter().any(|(id, lt, tx)| {
+                    *id == *object_id 
+                    && *lt == LockType::Write 
+                    && *tx != *transaction_hash
+                });
+                
+                if conflict {
+                    return Ok(false);
+                }
+                
+                // If we're trying to get a Write lock, check if anyone else has any lock
+                if lock_type == LockType::Write {
+                    let conflict = locks.iter().any(|(id, _, tx)| {
+                        *id == *object_id && *tx != *transaction_hash
+                    });
+                    
+                    if conflict {
+                        return Ok(false);
+                    }
+                }
+                
+                // No conflicts, we can acquire the lock
+                drop(locks); // Release the borrow
+                self.acquired_locks.borrow_mut().push((*object_id, lock_type, *transaction_hash));
+                Ok(true)
+            }
+            
+            fn release_lock(
+                &self,
+                object_id: &UnitsObjectId,
+                transaction_hash: &TransactionHash,
+            ) -> Result<bool, String> {
+                let mut locks = self.acquired_locks.borrow_mut();
+                let original_len = locks.len();
+                
+                // Remove all locks on this object by this transaction
+                locks.retain(|(id, _, tx)| !(*id == *object_id && *tx == *transaction_hash));
+                
+                Ok(locks.len() < original_len)
+            }
+            
+            fn get_lock_info(&self, object_id: &UnitsObjectId) -> Result<Option<LockInfo>, String> {
+                let locks = self.acquired_locks.borrow();
+                
+                // Find the first lock on this object
+                for (id, lock_type, tx) in locks.iter() {
+                    if *id == *object_id {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                            
+                        return Ok(Some(LockInfo {
+                            object_id: *id,
+                            lock_type: *lock_type,
+                            transaction_hash: *tx,
+                            acquired_at: now,
+                            timeout_ms: None,
+                        }));
+                    }
+                }
+                
+                Ok(None)
+            }
+            
+            fn can_acquire_lock(
+                &self,
+                object_id: &UnitsObjectId,
+                intent: AccessIntent,
+                transaction_hash: &TransactionHash,
+            ) -> Result<bool, String> {
+                let lock_type = match intent {
+                    AccessIntent::Read => LockType::Read,
+                    AccessIntent::Write => LockType::Write,
+                };
+                
+                // Use the same logic as acquire_lock but don't actually acquire
+                let locks = self.acquired_locks.borrow();
+                
+                // If it's already locked with Write by someone else, we can't lock it
+                let conflict = locks.iter().any(|(id, lt, tx)| {
+                    *id == *object_id 
+                    && *lt == LockType::Write 
+                    && *tx != *transaction_hash
+                });
+                
+                if conflict {
+                    return Ok(false);
+                }
+                
+                // If we're trying to get a Write lock, check if anyone else has any lock
+                if lock_type == LockType::Write {
+                    let conflict = locks.iter().any(|(id, _, tx)| {
+                        *id == *object_id && *tx != *transaction_hash
+                    });
+                    
+                    if conflict {
+                        return Ok(false);
+                    }
+                }
+                
+                Ok(true)
+            }
+            
+            fn release_transaction_locks(
+                &self,
+                transaction_hash: &TransactionHash,
+            ) -> Result<usize, String> {
+                let mut locks = self.acquired_locks.borrow_mut();
+                let original_len = locks.len();
+                
+                // Remove all locks by this transaction
+                locks.retain(|(_, _, tx)| *tx != *transaction_hash);
+                
+                Ok(original_len - locks.len())
+            }
+            
+            fn get_transaction_locks(
+                &self,
+                _transaction_hash: &TransactionHash,
+            ) -> Box<dyn UnitsLockIterator + '_> {
+                // Not needed for this test
+                unimplemented!()
+            }
+            
+            fn get_object_locks(
+                &self,
+                _object_id: &UnitsObjectId,
+            ) -> Box<dyn UnitsLockIterator + '_> {
+                // Not needed for this test
+                unimplemented!()
+            }
+            
+            fn cleanup_expired_locks(&self) -> Result<usize, String> {
+                // Not needed for this test
+                Ok(0)
+            }
+        }
+        
+        // Create test objects
+        let object_id1 = UnitsObjectId::unique_id_for_tests();
+        let object_id2 = UnitsObjectId::unique_id_for_tests();
+        
+        // Create a transaction
+        let tx1_hash = [1u8; 32];
+        let instr = Instruction {
+            data: vec![1, 2, 3],
+            object_intents: vec![
+                (object_id1, AccessIntent::Read),
+                (object_id2, AccessIntent::Write),
+            ],
+        };
+        
+        let tx1 = Transaction::new(vec![instr], tx1_hash);
+        
+        // Create the lock manager
+        let lock_manager = MockLockManager::new();
+        
+        // Test acquiring locks for a transaction
+        let locks = tx1.acquire_locks(&lock_manager).unwrap();
+        assert_eq!(locks.len(), 2);
+        
+        // Verify locks were acquired in the manager
+        assert_eq!(lock_manager.acquired_locks.borrow().len(), 2);
+        
+        // Test conflict detection with a second transaction
+        let tx2_hash = [2u8; 32];
+        let instr2 = Instruction {
+            data: vec![4, 5, 6],
+            object_intents: vec![
+                (object_id1, AccessIntent::Read),  // Should not conflict (shared read)
+                (object_id2, AccessIntent::Write), // Should conflict (existing write)
+            ],
+        };
+        
+        let tx2 = Transaction::new(vec![instr2], tx2_hash);
+        
+        // Check if tx2 can acquire all locks (should fail due to conflict on object2)
+        assert_eq!(tx2.can_acquire_all_locks(&lock_manager).unwrap(), false);
+        
+        // Test transaction with only read on object1 (should succeed)
+        let tx3_hash = [3u8; 32];
+        let instr3 = Instruction {
+            data: vec![7, 8, 9],
+            object_intents: vec![
+                (object_id1, AccessIntent::Read),  // Should not conflict (shared read)
+            ],
+        };
+        
+        let tx3 = Transaction::new(vec![instr3], tx3_hash);
+        
+        // Check if tx3 can acquire all locks (should succeed)
+        assert_eq!(tx3.can_acquire_all_locks(&lock_manager).unwrap(), true);
+        
+        // Actually acquire locks for tx3
+        let tx3_locks = tx3.acquire_locks(&lock_manager).unwrap();
+        assert_eq!(tx3_locks.len(), 1);
+        
+        // Now release all locks for tx1
+        for mut lock in locks {
+            lock.release().unwrap();
+        }
+        
+        // Now tx2 should be able to acquire all locks
+        assert_eq!(tx2.can_acquire_all_locks(&lock_manager).unwrap(), true);
+        
+        // Test execute_with_locks
+        let result = tx3.execute_with_locks(&lock_manager, |tx| {
+            // We could access the objects here, they're locked
+            tx.instructions.len()
+        }).unwrap();
+        
+        assert_eq!(result, 1);
     }
 }

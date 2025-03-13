@@ -3,7 +3,7 @@ use units_core::error::StorageError;
 use units_core::id::UnitsObjectId;
 use units_core::objects::TokenizedObject;
 use units_proofs::{ProofEngine, SlotNumber, StateProof, TokenizedObjectProof};
-use units_transaction::{CommitmentLevel, TransactionReceipt, TransactionEffect};
+use units_transaction::{AccessIntent, CommitmentLevel, LockType, TransactionReceipt, TransactionEffect, TransactionHash};
 
 use std::collections::HashMap;
 use std::iter::Iterator;
@@ -655,6 +655,138 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
         stats.insert("newest_slot".to_string(), 0);
         Ok(stats)
     }
+}
+
+/// Information about a lock held on an object
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LockInfo {
+    /// The ID of the object being locked
+    pub object_id: UnitsObjectId,
+    
+    /// The type of lock held (read or write)
+    pub lock_type: LockType,
+    
+    /// The hash of the transaction that holds this lock
+    pub transaction_hash: TransactionHash,
+    
+    /// When the lock was acquired (Unix timestamp)
+    pub acquired_at: u64,
+    
+    /// Optional timeout for the lock (in milliseconds)
+    pub timeout_ms: Option<u64>,
+}
+
+/// Iterator for traversing lock information
+pub trait UnitsLockIterator: Iterator<Item = Result<LockInfo, StorageError>> {}
+
+/// Persistent lock manager that stores lock information in the storage
+pub trait PersistentLockManager: std::fmt::Debug {
+    /// Acquire a lock on an object for a transaction
+    /// 
+    /// # Parameters
+    /// * `object_id` - The ID of the object to lock
+    /// * `lock_type` - The type of lock to acquire (read or write)
+    /// * `transaction_hash` - The hash of the transaction acquiring the lock
+    /// * `timeout_ms` - Optional timeout for the lock (in milliseconds)
+    /// 
+    /// # Returns
+    /// * `Ok(true)` - Lock was successfully acquired
+    /// * `Ok(false)` - Lock could not be acquired (conflict)
+    /// * `Err` - An error occurred while trying to acquire the lock
+    fn acquire_lock(
+        &self,
+        object_id: &UnitsObjectId,
+        lock_type: LockType,
+        transaction_hash: &TransactionHash,
+        timeout_ms: Option<u64>,
+    ) -> Result<bool, StorageError>;
+    
+    /// Release a lock on an object for a transaction
+    /// 
+    /// # Parameters
+    /// * `object_id` - The ID of the object to unlock
+    /// * `transaction_hash` - The hash of the transaction releasing the lock
+    /// 
+    /// # Returns
+    /// * `Ok(true)` - Lock was successfully released
+    /// * `Ok(false)` - Lock was not found or belongs to a different transaction
+    /// * `Err` - An error occurred while trying to release the lock
+    fn release_lock(
+        &self,
+        object_id: &UnitsObjectId,
+        transaction_hash: &TransactionHash,
+    ) -> Result<bool, StorageError>;
+    
+    /// Check if a lock exists and get its information
+    /// 
+    /// # Parameters
+    /// * `object_id` - The ID of the object to check
+    /// 
+    /// # Returns
+    /// * `Some(LockInfo)` - Object is locked, returns lock information
+    /// * `None` - Object is not locked
+    fn get_lock_info(&self, object_id: &UnitsObjectId) -> Result<Option<LockInfo>, StorageError>;
+    
+    /// Check if a transaction can acquire a lock on an object
+    /// 
+    /// # Parameters
+    /// * `object_id` - The ID of the object to check
+    /// * `intent` - The access intent (Read or Write)
+    /// * `transaction_hash` - The hash of the transaction checking lock availability
+    /// 
+    /// # Returns
+    /// * `true` - Lock can be acquired
+    /// * `false` - Lock cannot be acquired
+    fn can_acquire_lock(
+        &self,
+        object_id: &UnitsObjectId,
+        intent: AccessIntent,
+        transaction_hash: &TransactionHash,
+    ) -> Result<bool, StorageError>;
+    
+    /// Release all locks held by a transaction
+    /// 
+    /// # Parameters
+    /// * `transaction_hash` - The hash of the transaction to release locks for
+    /// 
+    /// # Returns
+    /// * `Ok(count)` - Number of locks released
+    /// * `Err` - An error occurred while trying to release locks
+    fn release_transaction_locks(
+        &self,
+        transaction_hash: &TransactionHash,
+    ) -> Result<usize, StorageError>;
+    
+    /// Get all locks held by a transaction
+    /// 
+    /// # Parameters
+    /// * `transaction_hash` - The hash of the transaction to get locks for
+    /// 
+    /// # Returns
+    /// An iterator over all locks held by the transaction
+    fn get_transaction_locks(
+        &self,
+        transaction_hash: &TransactionHash,
+    ) -> Box<dyn UnitsLockIterator + '_>;
+    
+    /// Get all locks on an object
+    /// 
+    /// # Parameters
+    /// * `object_id` - The ID of the object to get locks for
+    /// 
+    /// # Returns
+    /// An iterator over all locks on the object
+    fn get_object_locks(
+        &self,
+        object_id: &UnitsObjectId,
+    ) -> Box<dyn UnitsLockIterator + '_>;
+    
+    /// Check for expired locks and release them
+    /// 
+    /// # Returns
+    /// * `Ok(count)` - Number of expired locks released
+    /// * `Err` - An error occurred while trying to release expired locks
+    fn cleanup_expired_locks(&self) -> Result<usize, StorageError>;
 }
 
 /// Iterator for traversing transaction receipts in storage
