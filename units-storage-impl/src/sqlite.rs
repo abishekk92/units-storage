@@ -1,11 +1,11 @@
 #![cfg(feature = "sqlite")]
 
 use crate::storage_traits::{
-    UnitsProofIterator, UnitsStateProofIterator, UnitsStorage, UnitsStorageIterator,
-    UnitsStorageProofEngine, UnitsWriteAheadLog, WALEntry,
+    UnitsProofIterator, UnitsReceiptIterator, UnitsStateProofIterator, UnitsStorage, 
+    UnitsStorageIterator, UnitsStorageProofEngine, TransactionReceiptStorage, 
+    UnitsWriteAheadLog, WALEntry,
 };
 use units_transaction::TransactionReceipt;
-use units_runtime::runtime::{TransactionReceiptStorage, UnitsReceiptIterator};
 use anyhow::{Context, Result};
 use log;
 use sqlx::{

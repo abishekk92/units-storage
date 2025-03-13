@@ -4,8 +4,10 @@ pub mod verification;
 // Re-export the main types for convenience
 pub use runtime::{
     InMemoryReceiptIterator, InMemoryReceiptStorage, MockRuntime, Runtime, TransactionEffect,
-    TransactionReceipt, TransactionReceiptStorage, UnitsReceiptIterator,
+    TransactionReceipt,
 };
+// Re-export moved traits from units-storage-impl
+pub use units_storage_impl::storage_traits::{TransactionReceiptStorage, UnitsReceiptIterator};
 
 // Re-export types from units-transaction
 pub use units_transaction::{

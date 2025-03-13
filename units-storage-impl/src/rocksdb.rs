@@ -1,12 +1,11 @@
 #[cfg(feature = "rocksdb")]
 use crate::storage_traits::{
-    UnitsProofIterator, UnitsStateProofIterator, UnitsStorage, UnitsStorageIterator,
-    UnitsStorageProofEngine, UnitsWriteAheadLog,
+    UnitsProofIterator, UnitsReceiptIterator, UnitsStateProofIterator, UnitsStorage, 
+    UnitsStorageIterator, UnitsStorageProofEngine, TransactionReceiptStorage,
+    UnitsWriteAheadLog,
 };
 #[cfg(feature = "rocksdb")]
 use units_transaction::TransactionReceipt;
-#[cfg(feature = "rocksdb")]
-use units_runtime::runtime::{TransactionReceiptStorage, UnitsReceiptIterator};
 #[cfg(feature = "rocksdb")]
 use crate::wal::FileWriteAheadLog;
 #[cfg(feature = "rocksdb")]

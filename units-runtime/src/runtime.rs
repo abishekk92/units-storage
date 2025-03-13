@@ -4,6 +4,7 @@ use std::sync::Mutex;
 use units_core::error::StorageError;
 use units_core::id::UnitsObjectId;
 use units_proofs::SlotNumber;
+use units_storage_impl::storage_traits::{UnitsReceiptIterator, TransactionReceiptStorage};
 
 // Import types from units-transaction
 pub use units_transaction::{
@@ -11,49 +12,7 @@ pub use units_transaction::{
     TransactionEffect, TransactionReceipt,
 };
 
-/// Iterator for traversing transaction receipts in storage
-pub trait UnitsReceiptIterator: Iterator<Item = Result<TransactionReceipt, StorageError>> {}
-
-/// Storage interface for transaction receipts
-pub trait TransactionReceiptStorage {
-    /// Store a transaction receipt
-    ///
-    /// # Parameters
-    /// * `receipt` - The transaction receipt to store
-    ///
-    /// # Returns
-    /// Ok(()) if successful, Err otherwise
-    fn store_receipt(&self, receipt: &TransactionReceipt) -> Result<(), StorageError>;
-
-    /// Get a transaction receipt by transaction hash
-    ///
-    /// # Parameters
-    /// * `hash` - The transaction hash to get the receipt for
-    ///
-    /// # Returns
-    /// Some(receipt) if found, None otherwise
-    fn get_receipt(&self, hash: &[u8; 32]) -> Result<Option<TransactionReceipt>, StorageError>;
-
-    /// Get all transaction receipts for a specific object
-    ///
-    /// # Parameters
-    /// * `id` - The ID of the object to get receipts for
-    ///
-    /// # Returns
-    /// An iterator that yields all receipts that affected this object
-    fn get_receipts_for_object(&self, id: &UnitsObjectId) -> Box<dyn UnitsReceiptIterator + '_>;
-
-    /// Get all transaction receipts in a specific slot
-    ///
-    /// # Parameters
-    /// * `slot` - The slot to get receipts for
-    ///
-    /// # Returns
-    /// An iterator that yields all receipts in this slot
-    fn get_receipts_in_slot(&self, slot: SlotNumber) -> Box<dyn UnitsReceiptIterator + '_>;
-}
-
-// Conversion functions no longer needed as we've consolidated to a single TransactionReceipt type
+// Moved UnitsReceiptIterator and TransactionReceiptStorage to units-storage-impl::storage_traits
 
 /// Runtime for executing transactions that modify TokenizedObjects
 pub trait Runtime {

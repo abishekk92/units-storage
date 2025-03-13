@@ -5,7 +5,6 @@ use units_core::objects::TokenizedObject;
 use units_proofs::{ProofEngine, SlotNumber, StateProof, TokenizedObjectProof};
 use units_transaction::{CommitmentLevel, TransactionReceipt, TransactionEffect};
 
-// Implementation of TransactionReceipt moved to units-runtime
 use std::collections::HashMap;
 use std::iter::Iterator;
 use std::path::Path;
@@ -656,4 +655,46 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
         stats.insert("newest_slot".to_string(), 0);
         Ok(stats)
     }
+}
+
+/// Iterator for traversing transaction receipts in storage
+pub trait UnitsReceiptIterator: Iterator<Item = Result<TransactionReceipt, StorageError>> {}
+
+/// Storage interface for transaction receipts
+pub trait TransactionReceiptStorage {
+    /// Store a transaction receipt
+    ///
+    /// # Parameters
+    /// * `receipt` - The transaction receipt to store
+    ///
+    /// # Returns
+    /// Ok(()) if successful, Err otherwise
+    fn store_receipt(&self, receipt: &TransactionReceipt) -> Result<(), StorageError>;
+
+    /// Get a transaction receipt by transaction hash
+    ///
+    /// # Parameters
+    /// * `hash` - The transaction hash to get the receipt for
+    ///
+    /// # Returns
+    /// Some(receipt) if found, None otherwise
+    fn get_receipt(&self, hash: &[u8; 32]) -> Result<Option<TransactionReceipt>, StorageError>;
+
+    /// Get all transaction receipts for a specific object
+    ///
+    /// # Parameters
+    /// * `id` - The ID of the object to get receipts for
+    ///
+    /// # Returns
+    /// An iterator that yields all receipts that affected this object
+    fn get_receipts_for_object(&self, id: &UnitsObjectId) -> Box<dyn UnitsReceiptIterator + '_>;
+
+    /// Get all transaction receipts in a specific slot
+    ///
+    /// # Parameters
+    /// * `slot` - The slot to get receipts for
+    ///
+    /// # Returns
+    /// An iterator that yields all receipts in this slot
+    fn get_receipts_in_slot(&self, slot: SlotNumber) -> Box<dyn UnitsReceiptIterator + '_>;
 }
