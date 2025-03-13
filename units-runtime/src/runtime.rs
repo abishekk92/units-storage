@@ -1,6 +1,7 @@
-// Import types from units-transaction
-pub use units_transaction::{
-    AccessIntent, CommitmentLevel, ConflictResult, Instruction, Transaction, TransactionEffect,
+// Import types from units-core
+pub use units_core::locks::AccessIntent;
+pub use units_core::transaction::{
+    CommitmentLevel, ConflictResult, Instruction, Transaction, TransactionEffect,
     TransactionHash, TransactionReceipt,
 };
 
@@ -11,7 +12,7 @@ pub trait Runtime {
     /// Check for potential conflicts with pending or recent transactions
     ///
     /// This allows detecting conflicts before executing a transaction.
-    /// Implementations should use a conflict checker from the units-scheduler crate.
+    /// Implementations should use a conflict checker from units-core.
     ///
     /// # Parameters
     /// * `transaction` - The transaction to check for conflicts
@@ -20,7 +21,7 @@ pub trait Runtime {
     /// A ConflictResult indicating whether conflicts were detected
     fn check_conflicts(&self, _transaction: &Transaction) -> Result<ConflictResult, String> {
         // Default implementation assumes no conflicts
-        // Real implementations should use a ConflictChecker from units-scheduler
+        // Real implementations should use a ConflictChecker from units-core
         Ok(ConflictResult::NoConflict)
     }
 
@@ -119,7 +120,6 @@ pub trait Runtime {
 mod tests {
     use super::*;
     use units_core::id::UnitsObjectId;
-    use units_proofs::TokenizedObjectProof;
 
     #[test]
     fn test_transaction_receipt_creation() {
@@ -143,26 +143,12 @@ mod tests {
         let object_id1 = UnitsObjectId::unique_id_for_tests();
         let object_id2 = UnitsObjectId::unique_id_for_tests();
 
-        let proof1 = TokenizedObjectProof {
-            object_id: object_id1,
-            slot,
-            object_hash: [1u8; 32],
-            prev_proof_hash: None,
-            transaction_hash: Some(transaction_hash),
-            proof_data: vec![1, 2, 3],
-        };
+        // In the new implementation, proofs are stored as serialized bytes
+        let proof1_data = vec![1, 2, 3];
+        let proof2_data = vec![4, 5, 6];
 
-        let proof2 = TokenizedObjectProof {
-            object_id: object_id2,
-            slot,
-            object_hash: [2u8; 32],
-            prev_proof_hash: None,
-            transaction_hash: Some(transaction_hash),
-            proof_data: vec![4, 5, 6],
-        };
-
-        receipt.add_proof(object_id1, proof1.clone());
-        receipt.add_proof(object_id2, proof2.clone());
+        receipt.add_proof(object_id1, proof1_data.clone());
+        receipt.add_proof(object_id2, proof2_data.clone());
 
         // Verify the proofs were added
         assert_eq!(receipt.object_count(), 2);

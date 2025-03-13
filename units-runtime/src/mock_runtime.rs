@@ -3,9 +3,9 @@ use std::sync::Mutex;
 
 use units_core::error::StorageError;
 use units_core::id::UnitsObjectId;
+use units_core::scheduler::{BasicConflictChecker, ConflictChecker};
+use units_core::transaction::{CommitmentLevel, ConflictResult, Transaction, TransactionHash, TransactionReceipt};
 use units_proofs::SlotNumber;
-use units_scheduler::{BasicConflictChecker, ConflictChecker};
-use units_transaction::{CommitmentLevel, ConflictResult, Transaction, TransactionHash, TransactionReceipt};
 
 use crate::runtime::Runtime;
 use units_storage_impl::storage_traits::{TransactionReceiptStorage, UnitsReceiptIterator};
@@ -66,7 +66,7 @@ impl Runtime for MockRuntime {
             .cloned()
             .collect::<Vec<_>>();
 
-        // Use the BasicConflictChecker from units-scheduler
+        // Use the BasicConflictChecker from units-core
         let checker = BasicConflictChecker::new();
         checker.check_conflicts(transaction, &recent_transactions)
     }

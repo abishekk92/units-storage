@@ -7,9 +7,10 @@ pub use runtime::{Runtime, TransactionEffect, TransactionReceipt};
 // Re-export moved traits from units-storage-impl
 pub use units_storage_impl::storage_traits::{TransactionReceiptStorage, UnitsReceiptIterator};
 
-// Re-export types from units-transaction
-pub use units_transaction::{
-    AccessIntent, ConflictResult, Instruction, Transaction, TransactionHash,
+// Re-export types from units-core
+pub use units_core::locks::AccessIntent;
+pub use units_core::transaction::{
+    ConflictResult, Instruction, Transaction, TransactionHash,
 };
 
 pub use verification::{detect_double_spend, verify_transaction_included, ProofVerifier};
