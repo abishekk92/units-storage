@@ -11,13 +11,13 @@ use units_transaction::CommitmentLevel;
 pub struct TransactionEffect {
     /// The transaction that caused this effect
     pub transaction_hash: [u8; 32],
-    
+
     /// The ID of the object affected
     pub object_id: UnitsObjectId,
-    
+
     /// The state of the object before the transaction (None if object was created)
     pub before_image: Option<TokenizedObject>,
-    
+
     /// The state of the object after the transaction (None if object was deleted)
     pub after_image: Option<TokenizedObject>,
 }
@@ -79,7 +79,7 @@ impl TransactionReceipt {
     pub fn add_proof(&mut self, id: UnitsObjectId, proof: TokenizedObjectProof) {
         self.proofs.insert(id, proof);
     }
-    
+
     pub fn add_effect(&mut self, effect: TransactionEffect) {
         self.effects.push(effect);
     }
@@ -545,13 +545,13 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
             slot,
             true, // Assume success initially
             timestamp,
-            CommitmentLevel::Processing // Start as Processing to allow rollback
+            CommitmentLevel::Processing, // Start as Processing to allow rollback
         );
 
         // For each object to store, retrieve its current state (if any) for the before image
         for object in objects_to_store {
             let before_image = self.get(&object.id)?;
-            
+
             // Create a transaction effect
             let effect = TransactionEffect {
                 transaction_hash,
@@ -559,14 +559,14 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
                 before_image,
                 after_image: Some(object.clone()),
             };
-            
+
             receipt.add_effect(effect);
         }
-        
+
         // For each object to delete, retrieve its current state for the before image
         for &object_id in objects_to_delete {
             let before_image = self.get(&object_id)?;
-            
+
             // Only create an effect if the object exists
             if let Some(before) = before_image {
                 // Create a transaction effect
@@ -576,13 +576,13 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
                     before_image: Some(before),
                     after_image: None, // Object will be deleted
                 };
-                
+
                 receipt.add_effect(effect);
             }
         }
-        
+
         // Apply the changes but only generate proofs if committed
-        
+
         // Store all objects
         if !objects_to_store.is_empty() {
             // For Processing level transactions, we still need to apply the changes
@@ -591,10 +591,10 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
                 self.set(object, Some(transaction_hash))?;
             }
         }
-        
+
         // Delete all objects
         if !objects_to_delete.is_empty() {
-            // For Processing level transactions, apply the changes without 
+            // For Processing level transactions, apply the changes without
             // generating proofs in the receipt
             for &id in objects_to_delete {
                 self.delete(&id, Some(transaction_hash))?;
@@ -604,24 +604,27 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
         // Note: The transaction is executed but NOT committed.
         // The caller must explicitly commit the transaction to make it permanent
         // by calling commit_transaction() on the Runtime.
-        
+
         Ok(receipt)
     }
 
     /// Internal method to get transaction history for objects
     /// This functionality is provided by default in Transaction Receipt Storage
-    /// 
+    ///
     /// # Parameters
     /// * `transaction_hash` - The hash of the transaction to check
     ///
     /// # Returns
     /// Optional TransactionReceipt
-    fn get_transaction_receipt(&self, transaction_hash: &[u8; 32]) -> Result<Option<TransactionReceipt>, StorageError> {
+    fn get_transaction_receipt(
+        &self,
+        _transaction_hash: &[u8; 32],
+    ) -> Result<Option<TransactionReceipt>, StorageError> {
         // Default implementation returns None
         // Implementations should override this with proper storage-backed implementation
         Ok(None)
     }
-    
+
     /// Rollback a transaction, reverting all changes made by the transaction
     /// This only works for transactions with a Processing commitment level
     ///
@@ -636,7 +639,7 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
             Some(r) => r,
             None => return Err(StorageError::TransactionNotFound(*transaction_hash)),
         };
-        
+
         // Check if the transaction can be rolled back
         if !receipt.can_rollback() {
             return Err(StorageError::InvalidOperation(format!(
@@ -644,7 +647,7 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
                 receipt.commitment_level
             )));
         }
-        
+
         // Restore the before image for each effect
         for effect in receipt.effects {
             if let Some(before_image) = effect.before_image {
@@ -655,26 +658,32 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
                 self.delete(&effect.object_id, None)?;
             }
         }
-        
+
         // Mark the transaction as failed
         self.update_transaction_commitment(transaction_hash, CommitmentLevel::Failed)?;
-        
+
         Ok(true)
     }
-    
+
     /// Update a transaction's commitment level
-    /// 
+    ///
     /// # Parameters
     /// * `transaction_hash` - The hash of the transaction to update
     /// * `commitment_level` - The new commitment level
     ///
     /// # Returns
     /// Ok(()) if successful, Err otherwise
-    fn update_transaction_commitment(&self, transaction_hash: &[u8; 32], commitment_level: CommitmentLevel) -> Result<(), StorageError> {
+    fn update_transaction_commitment(
+        &self,
+        _transaction_hash: &[u8; 32],
+        _commitment_level: CommitmentLevel,
+    ) -> Result<(), StorageError> {
         // Default implementation returns unimplemented error
-        Err(StorageError::Unimplemented("Updating transaction commitment level not implemented by this storage".to_string()))
+        Err(StorageError::Unimplemented(
+            "Updating transaction commitment level not implemented by this storage".to_string(),
+        ))
     }
-    
+
     /// Commit a transaction, making its changes permanent and preventing rollback.
     /// This is when proofs are actually generated and stored.
     ///
@@ -689,12 +698,12 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
             Some(r) => r,
             None => return Err(StorageError::TransactionNotFound(*transaction_hash)),
         };
-        
+
         // Skip if already committed
         if receipt.commitment_level == CommitmentLevel::Committed {
             return Ok(());
         }
-        
+
         // Verify transaction is in Processing state
         if receipt.commitment_level != CommitmentLevel::Processing {
             return Err(StorageError::InvalidOperation(format!(
@@ -702,10 +711,10 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
                 receipt.commitment_level
             )));
         }
-        
+
         // Clone effects to avoid borrowing issues
         let effects = receipt.effects.clone();
-        
+
         // Generate proofs for all effects
         for effect in effects {
             if let Some(after) = &effect.after_image {
@@ -718,16 +727,16 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
                 receipt.add_proof(effect.object_id, proof);
             }
         }
-        
+
         // Mark as committed
         receipt.commit();
-        
+
         // Update the receipt in storage
         self.update_transaction_commitment(transaction_hash, CommitmentLevel::Committed)?;
-        
+
         Ok(())
     }
-    
+
     /// Mark a transaction as failed
     ///
     /// # Parameters
@@ -738,7 +747,7 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
     fn fail_transaction(&self, transaction_hash: &[u8; 32]) -> Result<(), StorageError> {
         self.update_transaction_commitment(transaction_hash, CommitmentLevel::Failed)
     }
-    
+
     /// Generate a state proof for the current slot and store it
     ///
     /// # Returns

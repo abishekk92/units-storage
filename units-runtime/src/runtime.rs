@@ -1,21 +1,16 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use units_core::error::StorageError;
 use units_core::id::UnitsObjectId;
 use units_proofs::{SlotNumber, TokenizedObjectProof};
 use units_storage_impl::storage_traits::{
-    TransactionReceiptStorage, UnitsReceiptIterator, TransactionReceipt
+    TransactionReceipt, TransactionReceiptStorage, UnitsReceiptIterator,
 };
 
 // Import types from units-transaction
 pub use units_transaction::{
-    TransactionHash,
-    AccessIntent,
-    Instruction,
-    Transaction,
-    ConflictResult,
-    CommitmentLevel
+    AccessIntent, CommitmentLevel, ConflictResult, Instruction, Transaction, TransactionHash,
 };
 
 /// Result of a transaction execution
@@ -23,10 +18,10 @@ pub use units_transaction::{
 pub struct TransactionResult {
     /// The hash of the transaction that was executed
     pub transaction_hash: TransactionHash,
-    
+
     /// Whether the transaction was executed successfully
     pub success: bool,
-    
+
     /// Any error message from the execution
     pub error_message: Option<String>,
 }
@@ -36,22 +31,22 @@ pub struct TransactionResult {
 pub struct RuntimeTransactionReceipt {
     /// The hash of the transaction that was executed
     pub transaction_hash: TransactionHash,
-    
+
     /// The slot in which this transaction was processed
     pub slot: SlotNumber,
-    
+
     /// Map of object IDs to their state proofs after the transaction
     pub object_proofs: HashMap<UnitsObjectId, TokenizedObjectProof>,
-    
+
     /// Whether the transaction was executed successfully
     pub success: bool,
-    
+
     /// Timestamp when the transaction was processed
     pub timestamp: u64,
-    
+
     /// The commitment level of this transaction
     pub commitment_level: CommitmentLevel,
-    
+
     /// Any error message from the execution (if not successful)
     pub error_message: Option<String>,
 }
@@ -59,8 +54,8 @@ pub struct RuntimeTransactionReceipt {
 impl RuntimeTransactionReceipt {
     /// Create a new transaction receipt
     pub fn new(
-        transaction_hash: TransactionHash, 
-        slot: SlotNumber, 
+        transaction_hash: TransactionHash,
+        slot: SlotNumber,
         success: bool,
         timestamp: u64,
     ) -> Self {
@@ -70,15 +65,19 @@ impl RuntimeTransactionReceipt {
             object_proofs: HashMap::new(),
             success,
             timestamp,
-            commitment_level: if success { CommitmentLevel::Committed } else { CommitmentLevel::Failed },
+            commitment_level: if success {
+                CommitmentLevel::Committed
+            } else {
+                CommitmentLevel::Failed
+            },
             error_message: None,
         }
     }
-    
+
     /// Create a new transaction receipt with a specific commitment level
     pub fn with_commitment_level(
-        transaction_hash: TransactionHash, 
-        slot: SlotNumber, 
+        transaction_hash: TransactionHash,
+        slot: SlotNumber,
         success: bool,
         timestamp: u64,
         commitment_level: CommitmentLevel,
@@ -93,35 +92,35 @@ impl RuntimeTransactionReceipt {
             error_message: None,
         }
     }
-    
+
     /// Add an object proof to the receipt
     pub fn add_proof(&mut self, object_id: UnitsObjectId, proof: TokenizedObjectProof) {
         self.object_proofs.insert(object_id, proof);
     }
-    
+
     /// Set an error message (used when transaction fails)
     pub fn set_error(&mut self, error: String) {
         self.success = false;
         self.commitment_level = CommitmentLevel::Failed;
         self.error_message = Some(error);
     }
-    
+
     /// Mark the transaction as committed
     pub fn commit(&mut self) {
         self.commitment_level = CommitmentLevel::Committed;
     }
-    
+
     /// Mark the transaction as failed
     pub fn fail(&mut self) {
         self.success = false;
         self.commitment_level = CommitmentLevel::Failed;
     }
-    
+
     /// Check if the transaction can be rolled back
     pub fn can_rollback(&self) -> bool {
         self.commitment_level == CommitmentLevel::Processing
     }
-    
+
     /// Get the number of objects modified by this transaction
     pub fn object_count(&self) -> usize {
         self.object_proofs.len()
@@ -136,14 +135,14 @@ impl From<RuntimeTransactionReceipt> for TransactionReceipt {
             receipt.slot,
             receipt.success,
             receipt.timestamp,
-            receipt.commitment_level
+            receipt.commitment_level,
         );
-        
+
         // Add all proofs
         for (id, proof) in receipt.object_proofs {
             tr.add_proof(id, proof);
         }
-        
+
         tr
     }
 }
@@ -155,14 +154,14 @@ impl From<TransactionReceipt> for RuntimeTransactionReceipt {
             receipt.slot,
             receipt.success,
             receipt.timestamp,
-            receipt.commitment_level
+            receipt.commitment_level,
         );
-        
+
         // Add all proofs
         for (id, proof) in receipt.proofs {
             rtr.add_proof(id, proof);
         }
-        
+
         rtr
     }
 }
@@ -184,10 +183,10 @@ pub trait Runtime {
         // Real implementations should use a ConflictChecker from units-scheduler
         Ok(ConflictResult::NoConflict)
     }
-    
+
     /// Execute a transaction and return a transaction receipt with proofs
     fn execute_transaction(&self, transaction: Transaction) -> RuntimeTransactionReceipt;
-    
+
     /// Try to execute a transaction with conflict checking
     ///
     /// This method first checks for conflicts and only executes the transaction
@@ -198,28 +197,29 @@ pub trait Runtime {
     ///
     /// # Returns
     /// Either a receipt or a conflict error
-    fn try_execute_transaction(&self, transaction: Transaction) 
-        -> Result<RuntimeTransactionReceipt, ConflictResult> 
-    {
+    fn try_execute_transaction(
+        &self,
+        transaction: Transaction,
+    ) -> Result<RuntimeTransactionReceipt, ConflictResult> {
         // Check for conflicts
         match self.check_conflicts(&transaction) {
             Ok(ConflictResult::NoConflict) | Ok(ConflictResult::ReadOnly) => {
                 // No conflicts, execute the transaction
                 Ok(self.execute_transaction(transaction))
-            },
+            }
             Ok(conflict) => {
                 // Conflicts detected, return them
                 Err(conflict)
-            },
+            }
             Err(_) => {
                 // Error checking conflicts, use a default error
                 Err(ConflictResult::Conflict(vec![]))
             }
         }
     }
-    
+
     /// Rollback a previously executed transaction by reverting objects to their state
-    /// before the transaction was executed. This only works for transactions with a 
+    /// before the transaction was executed. This only works for transactions with a
     /// Processing commitment level.
     ///
     /// # Parameters
@@ -227,13 +227,11 @@ pub trait Runtime {
     ///
     /// # Returns
     /// True if the rollback was successful, error message otherwise
-    fn rollback_transaction(&self, _transaction_hash: &TransactionHash) 
-        -> Result<bool, String>
-    {
+    fn rollback_transaction(&self, _transaction_hash: &TransactionHash) -> Result<bool, String> {
         // Default implementation returns an error since not all runtimes support rollback
         Err("Transaction rollback not supported by this runtime".to_string())
     }
-    
+
     /// Update the commitment level of a transaction
     ///
     /// # Parameters
@@ -242,13 +240,15 @@ pub trait Runtime {
     ///
     /// # Returns
     /// Ok(()) if successful, Err with error message otherwise
-    fn update_commitment_level(&self, _transaction_hash: &TransactionHash, _commitment_level: CommitmentLevel)
-        -> Result<(), String>
-    {
+    fn update_commitment_level(
+        &self,
+        _transaction_hash: &TransactionHash,
+        _commitment_level: CommitmentLevel,
+    ) -> Result<(), String> {
         // Default implementation returns an error
         Err("Updating commitment level not supported by this runtime".to_string())
     }
-    
+
     /// Commit a transaction, making its changes permanent and preventing rollback
     ///
     /// # Parameters
@@ -259,7 +259,7 @@ pub trait Runtime {
     fn commit_transaction(&self, transaction_hash: &TransactionHash) -> Result<(), String> {
         self.update_commitment_level(transaction_hash, CommitmentLevel::Committed)
     }
-    
+
     /// Mark a transaction as failed
     ///
     /// # Parameters
@@ -270,10 +270,10 @@ pub trait Runtime {
     fn fail_transaction(&self, transaction_hash: &TransactionHash) -> Result<(), String> {
         self.update_commitment_level(transaction_hash, CommitmentLevel::Failed)
     }
-    
+
     /// Get a transaction by its hash
     fn get_transaction(&self, hash: &TransactionHash) -> Option<Transaction>;
-    
+
     /// Get a transaction receipt by the transaction hash
     fn get_transaction_receipt(&self, hash: &TransactionHash) -> Option<RuntimeTransactionReceipt>;
 }
@@ -297,17 +297,17 @@ impl MockRuntime {
             current_slot: 0,
         }
     }
-    
+
     /// Add a transaction to the mock runtime's transaction store
     pub fn add_transaction(&mut self, transaction: Transaction) {
         self.transactions.insert(transaction.hash, transaction);
     }
-    
+
     /// Add a transaction receipt to the mock runtime's receipt store
     pub fn add_receipt(&mut self, receipt: RuntimeTransactionReceipt) {
         self.receipts.insert(receipt.transaction_hash, receipt);
     }
-    
+
     /// Get the current timestamp for transaction processing
     fn current_timestamp(&self) -> u64 {
         use std::time::{SystemTime, UNIX_EPOCH};
@@ -316,7 +316,7 @@ impl MockRuntime {
             .unwrap_or_default()
             .as_secs()
     }
-    
+
     /// Set the current slot for testing purposes
     pub fn set_slot(&mut self, slot: SlotNumber) {
         self.current_slot = slot;
@@ -326,58 +326,61 @@ impl MockRuntime {
 impl Runtime for MockRuntime {
     fn check_conflicts(&self, transaction: &Transaction) -> Result<ConflictResult, String> {
         use units_scheduler::{BasicConflictChecker, ConflictChecker};
-        
+
         // Get recent transactions for testing (last 10)
         let recent_transactions: Vec<_> = self.transactions.values().cloned().collect();
-        let recent_transactions = recent_transactions.iter().rev().take(10).cloned().collect::<Vec<_>>();
-        
+        let recent_transactions = recent_transactions
+            .iter()
+            .rev()
+            .take(10)
+            .cloned()
+            .collect::<Vec<_>>();
+
         // Use the BasicConflictChecker from units-scheduler
         let checker = BasicConflictChecker::new();
         checker.check_conflicts(transaction, &recent_transactions)
     }
-    
+
     fn execute_transaction(&self, transaction: Transaction) -> RuntimeTransactionReceipt {
         // In a mock implementation, we just pretend all transactions succeed
         let mut mock = self.clone();
         mock.add_transaction(transaction.clone());
-        
+
         // Create a transaction receipt for this transaction with Processing commitment level
-        let mut receipt = RuntimeTransactionReceipt::with_commitment_level(
+        let receipt = RuntimeTransactionReceipt::with_commitment_level(
             transaction.hash,
             self.current_slot,
             true, // Success
             self.current_timestamp(),
-            CommitmentLevel::Processing // Start as Processing to allow rollback
+            CommitmentLevel::Processing, // Start as Processing to allow rollback
         );
-        
+
         // In a real implementation, we would:
         // 1. Process each instruction in the transaction
         // 2. Update objects based on the instructions
         // 3. Generate proofs for each modified object
         // 4. Add those proofs to the receipt
         // 5. Set commitment level to Processing initially regardless of success
-        
+
         // Store the receipt
         mock.add_receipt(receipt.clone());
-        
+
         receipt
     }
-    
-    fn rollback_transaction(&self, transaction_hash: &TransactionHash) 
-        -> Result<bool, String> 
-    {
+
+    fn rollback_transaction(&self, transaction_hash: &TransactionHash) -> Result<bool, String> {
         // Check if the transaction exists
         let transaction = match self.get_transaction(transaction_hash) {
             Some(tx) => tx,
             None => return Err("Transaction not found".to_string()),
         };
-        
+
         // Check if we have a receipt for this transaction
-        let receipt = match self.get_transaction_receipt(transaction_hash) {
+        match self.get_transaction_receipt(transaction_hash) {
             Some(receipt) => receipt,
             None => return Err("Transaction receipt not found".to_string()),
         };
-        
+
         // Check if the transaction can be rolled back based on its commitment level
         if !transaction.can_rollback() {
             return Err(format!(
@@ -385,59 +388,65 @@ impl Runtime for MockRuntime {
                 transaction.commitment_level
             ));
         }
-        
+
         let mut mock = self.clone();
-        
+
         // In a real implementation:
         // 1. For each object affected by the transaction (found in receipt.object_proofs),
         //    we would retrieve its state from before the transaction was executed
         // 2. Restore each object to its previous state
         // 3. Remove the transaction's effects from the system
-        
+
         // Mark the transaction as failed (it was rolled back)
         if let Some(mut tx) = mock.transactions.get_mut(transaction_hash).cloned() {
             tx.fail();
             mock.transactions.insert(*transaction_hash, tx);
         }
-        
+
         if let Some(mut rcpt) = mock.receipts.get_mut(transaction_hash).cloned() {
             rcpt.fail();
             rcpt.commitment_level = CommitmentLevel::Failed;
             mock.receipts.insert(*transaction_hash, rcpt);
         }
-        
+
         // For a real implementation, we'd use storage history to restore previous versions
         // of the objects, but for the mock we'll just mark the transaction as failed
-        
+
         Ok(true)
     }
-    
-    fn update_commitment_level(&self, transaction_hash: &TransactionHash, commitment_level: CommitmentLevel) 
-        -> Result<(), String> 
-    {
+
+    fn update_commitment_level(
+        &self,
+        transaction_hash: &TransactionHash,
+        commitment_level: CommitmentLevel,
+    ) -> Result<(), String> {
         let mut mock = self.clone();
-        
+
         // Update transaction commitment level
         if let Some(mut tx) = mock.transactions.get_mut(transaction_hash).cloned() {
             // Check if this is a valid state transition
             match (tx.commitment_level, commitment_level) {
                 // Can move from Processing to any state
-                (CommitmentLevel::Processing, _) => {},
+                (CommitmentLevel::Processing, _) => {}
                 // Cannot change from Committed or Failed
                 (CommitmentLevel::Committed, _) => {
-                    return Err("Cannot change commitment level of a Committed transaction".to_string());
-                },
+                    return Err(
+                        "Cannot change commitment level of a Committed transaction".to_string()
+                    );
+                }
                 (CommitmentLevel::Failed, _) => {
-                    return Err("Cannot change commitment level of a Failed transaction".to_string());
-                },
+                    return Err(
+                        "Cannot change commitment level of a Failed transaction".to_string()
+                    );
+                }
             }
-            
+
             tx.commitment_level = commitment_level;
             mock.transactions.insert(*transaction_hash, tx);
         } else {
             return Err("Transaction not found".to_string());
         }
-        
+
         // Update receipt commitment level
         if let Some(mut receipt) = mock.receipts.get_mut(transaction_hash).cloned() {
             receipt.commitment_level = commitment_level;
@@ -446,14 +455,14 @@ impl Runtime for MockRuntime {
             }
             mock.receipts.insert(*transaction_hash, receipt);
         }
-        
+
         Ok(())
     }
-    
+
     fn get_transaction(&self, hash: &TransactionHash) -> Option<Transaction> {
         self.transactions.get(hash).cloned()
     }
-    
+
     fn get_transaction_receipt(&self, hash: &TransactionHash) -> Option<RuntimeTransactionReceipt> {
         self.receipts.get(hash).cloned()
     }
@@ -473,10 +482,10 @@ impl Clone for MockRuntime {
 pub struct InMemoryReceiptStorage {
     // Mapping from transaction hash to receipt
     receipts_by_hash: Mutex<HashMap<[u8; 32], RuntimeTransactionReceipt>>,
-    
+
     // Mapping from object ID to set of transaction hashes that affected it
     receipts_by_object: Mutex<HashMap<UnitsObjectId, HashSet<[u8; 32]>>>,
-    
+
     // Mapping from slot to set of transaction hashes in that slot
     receipts_by_slot: Mutex<HashMap<SlotNumber, HashSet<[u8; 32]>>>,
 }
@@ -500,7 +509,7 @@ pub struct InMemoryReceiptIterator {
 
 impl Iterator for InMemoryReceiptIterator {
     type Item = Result<TransactionReceipt, StorageError>;
-    
+
     fn next(&mut self) -> Option<Self::Item> {
         if self.current_index < self.receipts.len() {
             let receipt = self.receipts[self.current_index].clone();
@@ -519,35 +528,39 @@ impl TransactionReceiptStorage for InMemoryReceiptStorage {
     fn store_receipt(&self, receipt: &TransactionReceipt) -> Result<(), StorageError> {
         // Convert to RuntimeTransactionReceipt
         let runtime_receipt: RuntimeTransactionReceipt = receipt.clone().into();
-        
+
         // Store the receipt by transaction hash
         {
             let mut receipts_by_hash = self.receipts_by_hash.lock().unwrap();
             receipts_by_hash.insert(runtime_receipt.transaction_hash, runtime_receipt.clone());
         }
-        
+
         // Index the receipt by objects it affected
         {
             let mut receipts_by_object = self.receipts_by_object.lock().unwrap();
             for object_id in runtime_receipt.object_proofs.keys() {
-                let entry = receipts_by_object.entry(*object_id).or_insert_with(HashSet::new);
+                let entry = receipts_by_object
+                    .entry(*object_id)
+                    .or_insert_with(HashSet::new);
                 entry.insert(runtime_receipt.transaction_hash);
             }
         }
-        
+
         // Index the receipt by slot
         {
             let mut receipts_by_slot = self.receipts_by_slot.lock().unwrap();
-            let entry = receipts_by_slot.entry(runtime_receipt.slot).or_insert_with(HashSet::new);
+            let entry = receipts_by_slot
+                .entry(runtime_receipt.slot)
+                .or_insert_with(HashSet::new);
             entry.insert(runtime_receipt.transaction_hash);
         }
-        
+
         Ok(())
     }
-    
+
     fn get_receipt(&self, hash: &[u8; 32]) -> Result<Option<TransactionReceipt>, StorageError> {
         let receipts_by_hash = self.receipts_by_hash.lock().unwrap();
-        
+
         // Convert to storage TransactionReceipt type
         if let Some(runtime_receipt) = receipts_by_hash.get(hash) {
             let storage_receipt: TransactionReceipt = runtime_receipt.clone().into();
@@ -556,7 +569,7 @@ impl TransactionReceiptStorage for InMemoryReceiptStorage {
             Ok(None)
         }
     }
-    
+
     fn get_receipts_for_object(&self, id: &UnitsObjectId) -> Box<dyn UnitsReceiptIterator + '_> {
         // Get all transaction hashes for this object
         let transaction_hashes = {
@@ -566,7 +579,7 @@ impl TransactionReceiptStorage for InMemoryReceiptStorage {
                 None => HashSet::new(),
             }
         };
-        
+
         // Get all receipts for these transaction hashes
         let mut receipts = Vec::new();
         {
@@ -577,16 +590,16 @@ impl TransactionReceiptStorage for InMemoryReceiptStorage {
                 }
             }
         }
-        
+
         // Sort receipts by slot (most recent first)
         receipts.sort_by(|a, b| b.slot.cmp(&a.slot));
-        
+
         Box::new(InMemoryReceiptIterator {
             receipts,
             current_index: 0,
         })
     }
-    
+
     fn get_receipts_in_slot(&self, slot: SlotNumber) -> Box<dyn UnitsReceiptIterator + '_> {
         // Get all transaction hashes for this slot
         let transaction_hashes = {
@@ -596,7 +609,7 @@ impl TransactionReceiptStorage for InMemoryReceiptStorage {
                 None => HashSet::new(),
             }
         };
-        
+
         // Get all receipts for these transaction hashes
         let mut receipts = Vec::new();
         {
@@ -607,10 +620,10 @@ impl TransactionReceiptStorage for InMemoryReceiptStorage {
                 }
             }
         }
-        
+
         // Sort receipts by timestamp (most recent first)
         receipts.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-        
+
         Box::new(InMemoryReceiptIterator {
             receipts,
             current_index: 0,
@@ -630,25 +643,21 @@ mod tests {
         let slot = 42;
         let success = true;
         let timestamp = 123456789;
-        
-        let mut receipt = RuntimeTransactionReceipt::new(
-            transaction_hash,
-            slot,
-            success,
-            timestamp
-        );
-        
+
+        let mut receipt =
+            RuntimeTransactionReceipt::new(transaction_hash, slot, success, timestamp);
+
         // Verify the receipt fields
         assert_eq!(receipt.transaction_hash, transaction_hash);
         assert_eq!(receipt.slot, slot);
         assert_eq!(receipt.success, success);
         assert_eq!(receipt.timestamp, timestamp);
         assert_eq!(receipt.object_count(), 0);
-        
+
         // Add some object proofs
         let object_id1 = UnitsObjectId::unique_id_for_tests();
         let object_id2 = UnitsObjectId::unique_id_for_tests();
-        
+
         let proof1 = TokenizedObjectProof {
             object_id: object_id1,
             slot,
@@ -657,7 +666,7 @@ mod tests {
             transaction_hash: Some(transaction_hash),
             proof_data: vec![1, 2, 3],
         };
-        
+
         let proof2 = TokenizedObjectProof {
             object_id: object_id2,
             slot,
@@ -666,21 +675,20 @@ mod tests {
             transaction_hash: Some(transaction_hash),
             proof_data: vec![4, 5, 6],
         };
-        
+
         receipt.add_proof(object_id1, proof1.clone());
         receipt.add_proof(object_id2, proof2.clone());
-        
+
         // Verify the proofs were added
         assert_eq!(receipt.object_count(), 2);
-        
+
         // Check if objects exist in the collection
         assert!(receipt.object_proofs.contains_key(&object_id1));
-        assert!(receipt.object_proofs.contains_key(&object_id2));
-        
+
         // Test setting an error
         let error_msg = "Transaction failed".to_string();
         receipt.set_error(error_msg.clone());
-        
+
         assert_eq!(receipt.success, false);
         assert_eq!(receipt.error_message, Some(error_msg));
     }
