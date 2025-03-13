@@ -263,7 +263,11 @@ mod tests {
         // Create a transaction hash
         let transaction_hash = [42u8; 32];
 
-        // Generate proofs fo 123, true, 456789
+        // Generate proofs for objects with transaction_hash
+        let proof1 = engine
+            .generate_object_proof(&object1, None, Some(transaction_hash))
+            .unwrap();
+
         let proof2 = engine
             .generate_object_proof(&object2, None, Some(transaction_hash))
             .unwrap();
