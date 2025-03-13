@@ -10,4 +10,5 @@ keywords = ["units", "tokenization", "transaction"]
 
 [dependencies]
 units-core.workspace = true
+units-proofs.workspace = true
 serde.workspace = true

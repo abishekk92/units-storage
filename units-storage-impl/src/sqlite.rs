@@ -4,7 +4,7 @@ use crate::storage_traits::{
     UnitsProofIterator, UnitsStateProofIterator, UnitsStorage, UnitsStorageIterator,
     UnitsStorageProofEngine, UnitsWriteAheadLog, WALEntry,
 };
-use units_runtime::TransactionReceipt;
+use units_transaction::TransactionReceipt;
 use units_runtime::runtime::{TransactionReceiptStorage, UnitsReceiptIterator};
 use anyhow::{Context, Result};
 use log;

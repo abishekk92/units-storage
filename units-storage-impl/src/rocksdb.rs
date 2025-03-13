@@ -4,7 +4,7 @@ use crate::storage_traits::{
     UnitsStorageProofEngine, UnitsWriteAheadLog,
 };
 #[cfg(feature = "rocksdb")]
-use units_runtime::TransactionReceipt;
+use units_transaction::TransactionReceipt;
 #[cfg(feature = "rocksdb")]
 use units_runtime::runtime::{TransactionReceiptStorage, UnitsReceiptIterator};
 #[cfg(feature = "rocksdb")]

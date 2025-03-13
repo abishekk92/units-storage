@@ -3,8 +3,7 @@ use units_core::error::StorageError;
 use units_core::id::UnitsObjectId;
 use units_core::objects::TokenizedObject;
 use units_proofs::{ProofEngine, SlotNumber, StateProof, TokenizedObjectProof};
-use units_runtime::{TransactionReceipt, TransactionEffect};
-use units_transaction::CommitmentLevel;
+use units_transaction::{CommitmentLevel, TransactionReceipt, TransactionEffect};
 
 // Implementation of TransactionReceipt moved to units-runtime
 use std::collections::HashMap;

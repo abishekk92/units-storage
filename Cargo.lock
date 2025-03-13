@@ -2001,6 +2001,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "units-core",
+ "units-proofs",
 ]
 
 [[package]]

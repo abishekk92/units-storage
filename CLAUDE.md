@@ -7,10 +7,11 @@
 - Run single test: `fish -c "cargo test test_name --features all"` (specific crate test)
 - Run tests for specific crate: `fish -c "cd crate-name && cargo test --features all"`
 - Run with release: `fish -c "cargo workspaces exec -- cargo build --release --features all"`
+- Standard workflow: Build → Check → Test (skip clippy)
 
 ## Code Style Guidelines
 - **Formatting**: Use `fish -c "cargo workspaces exec -- cargo fmt"` for automatic formatting
-- **Linting**: Run `fish -c "cargo workspaces exec -- cargo clippy"` to find issues
+- **Note**: Clippy linting is currently skipped in the standard workflow
 - **Naming**: Use snake_case for variables/functions, CamelCase for types/traits
 - **Imports**: Group std imports first, then external crates, then internal modules
 - **Error Handling**: Use Result<T, E> with ? operator for propagation

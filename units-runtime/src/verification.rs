@@ -15,7 +15,7 @@ use units_proofs::{
     VerificationResult
 };
 
-use crate::runtime::TransactionReceipt;
+use units_transaction::TransactionReceipt;
 
 /// Verifier for transaction receipts and proofs that adapts the proof engine
 /// for receipt verification.
