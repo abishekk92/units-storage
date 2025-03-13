@@ -3,6 +3,8 @@ use units_core::error::StorageError;
 use units_core::id::UnitsObjectId;
 use units_core::locks::{AccessIntent, LockInfo, LockType, PersistentLockManager, UnitsLockIterator};
 use std::time::{SystemTime, UNIX_EPOCH};
+#[cfg(feature = "sqlite")]
+use sqlx::Row;
 
 /// An empty iterator implementation for LockInfo
 pub struct EmptyLockIterator<E>(std::marker::PhantomData<E>);
@@ -22,6 +24,19 @@ impl<E> Iterator for EmptyLockIterator<E> {
 }
 
 impl<E: Debug + std::fmt::Display> UnitsLockIterator<E> for EmptyLockIterator<E> {}
+
+// Wrapper type to implement UnitsLockIterator for IntoIter
+pub struct LockInfoVecIterator(std::vec::IntoIter<Result<LockInfo, StorageError>>);
+
+impl Iterator for LockInfoVecIterator {
+    type Item = Result<LockInfo, StorageError>;
+    
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next()
+    }
+}
+
+impl UnitsLockIterator<StorageError> for LockInfoVecIterator {}
 
 /// Helper function to get the current timestamp in seconds
 pub fn current_time_secs() -> u64 {
@@ -117,7 +132,7 @@ impl SqliteLockManager {
         match value {
             0 => Ok(LockType::Read),
             1 => Ok(LockType::Write),
-            _ => Err(StorageError::InvalidData(format!(
+            _ => Err(StorageError::Other(format!(
                 "Invalid lock type value: {}",
                 value
             ))),
@@ -156,7 +171,7 @@ impl SqliteLockManager {
                 }
 
                 // Read locks are compatible with other read locks
-                match self.int_to_lock_type(lock_type)? {
+                match Self::int_to_lock_type(lock_type)? {
                     LockType::Read => Ok(true),
                     LockType::Write => Ok(false), // Cannot acquire read lock if write lock exists
                 }
@@ -259,7 +274,7 @@ impl PersistentLockManager for SqliteLockManager {
     ) -> Result<bool, Self::Error> {
         self.rt.block_on(async {
             // First check if there's an expired lock that needs to be cleaned up
-            let cleaned_up = self.check_and_cleanup_expired_lock(object_id).await?;
+            let _cleaned_up = self.check_and_cleanup_expired_lock(object_id).await?;
 
             // Check if we can acquire the lock
             let can_acquire = match lock_type {
@@ -268,7 +283,7 @@ impl PersistentLockManager for SqliteLockManager {
             };
 
             if !can_acquire {
-                return Err(StorageError::LockConflict(*object_id));
+                return Err(StorageError::Other(format!("Lock conflict for object ID {:?}", *object_id)));
             }
 
             // Acquire the lock
@@ -341,7 +356,7 @@ impl PersistentLockManager for SqliteLockManager {
                     let timeout_ms: Option<i64> = row.get(3);
 
                     // Convert lock type
-                    let lock_type = self.int_to_lock_type(lock_type_int)?;
+                    let lock_type = Self::int_to_lock_type(lock_type_int)?;
 
                     // Convert transaction hash to array
                     let mut transaction_hash = [0u8; 32];
@@ -370,7 +385,7 @@ impl PersistentLockManager for SqliteLockManager {
     ) -> Result<bool, Self::Error> {
         self.rt.block_on(async {
             // First check if there's an expired lock that needs to be cleaned up
-            let cleaned_up = self.check_and_cleanup_expired_lock(object_id).await?;
+            let _cleaned_up = self.check_and_cleanup_expired_lock(object_id).await?;
 
             // Convert AccessIntent to LockType
             let lock_type = match intent {
@@ -436,7 +451,7 @@ impl PersistentLockManager for SqliteLockManager {
                         let object_id = UnitsObjectId::new(object_id_array);
 
                         // Convert lock type
-                        let lock_type = match self.int_to_lock_type(lock_type_int) {
+                        let lock_type = match Self::int_to_lock_type(lock_type_int) {
                             Ok(lt) => lt,
                             Err(e) => {
                                 return vec![Err(e)];
@@ -462,20 +477,20 @@ impl PersistentLockManager for SqliteLockManager {
             }
         });
 
-        // Create an iterator from the Vec
-        Box::new(locks.into_iter())
+        // Create an iterator from the Vec using our wrapper
+        Box::new(LockInfoVecIterator(locks.into_iter()))
     }
 
     fn get_object_locks(&self, object_id: &UnitsObjectId) -> Box<dyn UnitsLockIterator<Self::Error> + '_> {
         // First check if there's an expired lock that needs to be cleaned up
-        let cleaned_up = self.rt.block_on(async {
+        let cleanup_result = self.rt.block_on(async {
             self.check_and_cleanup_expired_lock(object_id).await
         });
 
         // If the check failed, return an iterator with the error
-        if let Err(e) = cleaned_up {
+        if let Err(e) = cleanup_result {
             let error_iter = vec![Err(e)].into_iter();
-            return Box::new(error_iter);
+            return Box::new(LockInfoVecIterator(error_iter));
         }
 
         // Get the lock info
@@ -496,7 +511,7 @@ impl PersistentLockManager for SqliteLockManager {
                     let timeout_ms: Option<i64> = row.get(3);
 
                     // Convert lock type
-                    let lock_type = match self.int_to_lock_type(lock_type_int) {
+                    let lock_type = match Self::int_to_lock_type(lock_type_int) {
                         Ok(lt) => lt,
                         Err(e) => return vec![Err(e)],
                     };
@@ -525,8 +540,8 @@ impl PersistentLockManager for SqliteLockManager {
             }
         });
 
-        // Create an iterator from the Vec
-        Box::new(lock_info.into_iter())
+        // Create an iterator from the Vec using our wrapper
+        Box::new(LockInfoVecIterator(lock_info.into_iter()))
     }
 
     fn cleanup_expired_locks(&self) -> Result<usize, Self::Error> {
@@ -746,7 +761,7 @@ impl PersistentLockManager for RocksDbLockManager {
         timeout_ms: Option<u64>,
     ) -> Result<bool, Self::Error> {
         // First check if there's an expired lock that needs to be cleaned up
-        let cleaned_up = self.check_and_cleanup_expired_lock(object_id)?;
+        let _cleaned_up = self.check_and_cleanup_expired_lock(object_id)?;
 
         // Check if we can acquire the lock
         let can_acquire = match lock_type {
@@ -755,7 +770,7 @@ impl PersistentLockManager for RocksDbLockManager {
         };
 
         if !can_acquire {
-            return Err(StorageError::LockConflict(*object_id));
+            return Err(StorageError::Other(format!("Lock conflict for object ID {:?}", *object_id)));
         }
 
         // Get the lock CF
@@ -879,7 +894,7 @@ impl PersistentLockManager for RocksDbLockManager {
         transaction_hash: &[u8; 32],
     ) -> Result<bool, Self::Error> {
         // First check if there's an expired lock that needs to be cleaned up
-        let cleaned_up = self.check_and_cleanup_expired_lock(object_id)?;
+        let _cleaned_up = self.check_and_cleanup_expired_lock(object_id)?;
 
         // Convert AccessIntent to LockType
         let lock_type = match intent {
@@ -975,13 +990,8 @@ impl PersistentLockManager for RocksDbLockManager {
         let cf = match self.db.cf_handle(&self.locks_cf) {
             Some(cf) => cf,
             None => {
-                return Box::new(
-                    vec![Err(StorageError::Database(format!(
-                        "Column family {} not found",
-                        self.locks_cf
-                    )))]
-                    .into_iter(),
-                )
+                let error = StorageError::Database(format!("Column family {} not found", self.locks_cf));
+                return Box::new(LockInfoVecIterator(vec![Err(error)].into_iter()));
             }
         };
 
@@ -1045,7 +1055,7 @@ impl PersistentLockManager for RocksDbLockManager {
         if locks.is_empty() {
             Box::new(EmptyLockIterator::new())
         } else {
-            Box::new(locks.into_iter())
+            Box::new(LockInfoVecIterator(locks.into_iter()))
         }
     }
 
@@ -1053,7 +1063,7 @@ impl PersistentLockManager for RocksDbLockManager {
         // First check if there's an expired lock that needs to be cleaned up
         match self.check_and_cleanup_expired_lock(object_id) {
             Err(e) => {
-                return Box::new(vec![Err(e)].into_iter());
+                return Box::new(LockInfoVecIterator(vec![Err(e)].into_iter()));
             }
             Ok(true) => {
                 // Lock was expired and cleaned up, return empty iterator
@@ -1068,13 +1078,8 @@ impl PersistentLockManager for RocksDbLockManager {
         let cf = match self.db.cf_handle(&self.locks_cf) {
             Some(cf) => cf,
             None => {
-                return Box::new(
-                    vec![Err(StorageError::Database(format!(
-                        "Column family {} not found",
-                        self.locks_cf
-                    )))]
-                    .into_iter(),
-                )
+                let error = StorageError::Database(format!("Column family {} not found", self.locks_cf));
+                return Box::new(LockInfoVecIterator(vec![Err(error)].into_iter()));
             }
         };
 
@@ -1083,10 +1088,10 @@ impl PersistentLockManager for RocksDbLockManager {
             Ok(Some(bytes)) => {
                 match self.deserialize_lock_info(&bytes) {
                     Ok(lock_info) => {
-                        Box::new(vec![Ok(lock_info)].into_iter())
+                        Box::new(LockInfoVecIterator(vec![Ok(lock_info)].into_iter()))
                     }
                     Err(e) => {
-                        Box::new(vec![Err(e)].into_iter())
+                        Box::new(LockInfoVecIterator(vec![Err(e)].into_iter()))
                     }
                 }
             }
@@ -1094,13 +1099,8 @@ impl PersistentLockManager for RocksDbLockManager {
                 Box::new(EmptyLockIterator::new())
             }
             Err(e) => {
-                Box::new(
-                    vec![Err(StorageError::Database(format!(
-                        "Error getting lock info: {}",
-                        e
-                    )))]
-                    .into_iter(),
-                )
+                let error = StorageError::Database(format!("Error getting lock info: {}", e));
+                Box::new(LockInfoVecIterator(vec![Err(error)].into_iter()))
             }
         }
     }

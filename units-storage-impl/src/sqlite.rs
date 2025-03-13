@@ -765,7 +765,8 @@ impl UnitsStorageProofEngine for SqliteStorage {
                 // we would need to deserialize the full proof
                 Some(StateProof {
                     slot: 0, // This will be replaced by the engine
-                    prev_state_hash: None,
+                    prev_state_proof_hash: None,
+                    object_ids: Vec::new(), // Empty list of object IDs
                     proof_data,
                 })
             } else {
