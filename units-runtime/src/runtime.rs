@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
 use std::iter::Iterator;
+use std::sync::Mutex;
 use units_core::error::StorageError;
 use units_core::id::UnitsObjectId;
 use units_core::objects::TokenizedObject;
@@ -54,19 +54,6 @@ pub trait TransactionReceiptStorage {
     fn get_receipts_in_slot(&self, slot: SlotNumber) -> Box<dyn UnitsReceiptIterator + '_>;
 }
 
-/// Result of a transaction execution
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TransactionResult {
-    /// The hash of the transaction that was executed
-    pub transaction_hash: TransactionHash,
-
-    /// Whether the transaction was executed successfully
-    pub success: bool,
-
-    /// Any error message from the execution
-    pub error_message: Option<String>,
-}
-
 /// Represents the before and after state of an object in a transaction
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransactionEffect {
@@ -106,7 +93,7 @@ pub struct TransactionReceipt {
 
     /// Any error message from the execution (if not successful)
     pub error_message: Option<String>,
-    
+
     /// Effects track the before and after state of objects for easier rollback
     pub effects: Vec<TransactionEffect>,
 }
@@ -668,8 +655,7 @@ mod tests {
         let success = true;
         let timestamp = 123456789;
 
-        let mut receipt =
-            TransactionReceipt::new(transaction_hash, slot, success, timestamp);
+        let mut receipt = TransactionReceipt::new(transaction_hash, slot, success, timestamp);
 
         // Verify the receipt fields
         assert_eq!(receipt.transaction_hash, transaction_hash);
