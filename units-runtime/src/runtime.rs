@@ -14,7 +14,8 @@ pub use units_transaction::{
     AccessIntent,
     Instruction,
     Transaction,
-    ConflictResult
+    ConflictResult,
+    CommitmentLevel
 };
 
 /// Result of a transaction execution
@@ -48,6 +49,9 @@ pub struct RuntimeTransactionReceipt {
     /// Timestamp when the transaction was processed
     pub timestamp: u64,
     
+    /// The commitment level of this transaction
+    pub commitment_level: CommitmentLevel,
+    
     /// Any error message from the execution (if not successful)
     pub error_message: Option<String>,
 }
@@ -66,6 +70,26 @@ impl RuntimeTransactionReceipt {
             object_proofs: HashMap::new(),
             success,
             timestamp,
+            commitment_level: if success { CommitmentLevel::Committed } else { CommitmentLevel::Failed },
+            error_message: None,
+        }
+    }
+    
+    /// Create a new transaction receipt with a specific commitment level
+    pub fn with_commitment_level(
+        transaction_hash: TransactionHash, 
+        slot: SlotNumber, 
+        success: bool,
+        timestamp: u64,
+        commitment_level: CommitmentLevel,
+    ) -> Self {
+        Self {
+            transaction_hash,
+            slot,
+            object_proofs: HashMap::new(),
+            success,
+            timestamp,
+            commitment_level,
             error_message: None,
         }
     }
@@ -78,7 +102,24 @@ impl RuntimeTransactionReceipt {
     /// Set an error message (used when transaction fails)
     pub fn set_error(&mut self, error: String) {
         self.success = false;
+        self.commitment_level = CommitmentLevel::Failed;
         self.error_message = Some(error);
+    }
+    
+    /// Mark the transaction as committed
+    pub fn commit(&mut self) {
+        self.commitment_level = CommitmentLevel::Committed;
+    }
+    
+    /// Mark the transaction as failed
+    pub fn fail(&mut self) {
+        self.success = false;
+        self.commitment_level = CommitmentLevel::Failed;
+    }
+    
+    /// Check if the transaction can be rolled back
+    pub fn can_rollback(&self) -> bool {
+        self.commitment_level == CommitmentLevel::Processing
     }
     
     /// Get the number of objects modified by this transaction
@@ -90,11 +131,12 @@ impl RuntimeTransactionReceipt {
 // Conversion functions between RuntimeTransactionReceipt and TransactionReceipt
 impl From<RuntimeTransactionReceipt> for TransactionReceipt {
     fn from(receipt: RuntimeTransactionReceipt) -> Self {
-        let mut tr = TransactionReceipt::new(
+        let mut tr = TransactionReceipt::with_commitment_level(
             receipt.transaction_hash,
             receipt.slot,
             receipt.success,
-            receipt.timestamp
+            receipt.timestamp,
+            receipt.commitment_level
         );
         
         // Add all proofs
@@ -108,11 +150,12 @@ impl From<RuntimeTransactionReceipt> for TransactionReceipt {
 
 impl From<TransactionReceipt> for RuntimeTransactionReceipt {
     fn from(receipt: TransactionReceipt) -> Self {
-        let mut rtr = RuntimeTransactionReceipt::new(
+        let mut rtr = RuntimeTransactionReceipt::with_commitment_level(
             receipt.transaction_hash,
             receipt.slot,
             receipt.success,
-            receipt.timestamp
+            receipt.timestamp,
+            receipt.commitment_level
         );
         
         // Add all proofs
@@ -175,18 +218,57 @@ pub trait Runtime {
         }
     }
     
-    /// Rollback a previously executed transaction
+    /// Rollback a previously executed transaction by reverting objects to their state
+    /// before the transaction was executed. This only works for transactions with a 
+    /// Processing commitment level.
     ///
     /// # Parameters
     /// * `transaction_hash` - The hash of the transaction to rollback
     ///
     /// # Returns
-    /// A receipt for the rollback transaction if successful
+    /// True if the rollback was successful, error message otherwise
     fn rollback_transaction(&self, _transaction_hash: &TransactionHash) 
-        -> Result<RuntimeTransactionReceipt, String>
+        -> Result<bool, String>
     {
         // Default implementation returns an error since not all runtimes support rollback
         Err("Transaction rollback not supported by this runtime".to_string())
+    }
+    
+    /// Update the commitment level of a transaction
+    ///
+    /// # Parameters
+    /// * `transaction_hash` - The hash of the transaction to update
+    /// * `commitment_level` - The new commitment level
+    ///
+    /// # Returns
+    /// Ok(()) if successful, Err with error message otherwise
+    fn update_commitment_level(&self, _transaction_hash: &TransactionHash, _commitment_level: CommitmentLevel)
+        -> Result<(), String>
+    {
+        // Default implementation returns an error
+        Err("Updating commitment level not supported by this runtime".to_string())
+    }
+    
+    /// Commit a transaction, making its changes permanent and preventing rollback
+    ///
+    /// # Parameters
+    /// * `transaction_hash` - The hash of the transaction to commit
+    ///
+    /// # Returns
+    /// Ok(()) if successful, Err with error message otherwise
+    fn commit_transaction(&self, transaction_hash: &TransactionHash) -> Result<(), String> {
+        self.update_commitment_level(transaction_hash, CommitmentLevel::Committed)
+    }
+    
+    /// Mark a transaction as failed
+    ///
+    /// # Parameters
+    /// * `transaction_hash` - The hash of the transaction to mark as failed
+    ///
+    /// # Returns
+    /// Ok(()) if successful, Err with error message otherwise
+    fn fail_transaction(&self, transaction_hash: &TransactionHash) -> Result<(), String> {
+        self.update_commitment_level(transaction_hash, CommitmentLevel::Failed)
     }
     
     /// Get a transaction by its hash
@@ -259,12 +341,13 @@ impl Runtime for MockRuntime {
         let mut mock = self.clone();
         mock.add_transaction(transaction.clone());
         
-        // Create a transaction receipt for this transaction
-        let receipt = RuntimeTransactionReceipt::new(
+        // Create a transaction receipt for this transaction with Processing commitment level
+        let mut receipt = RuntimeTransactionReceipt::with_commitment_level(
             transaction.hash,
             self.current_slot,
-            true,
-            self.current_timestamp()
+            true, // Success
+            self.current_timestamp(),
+            CommitmentLevel::Processing // Start as Processing to allow rollback
         );
         
         // In a real implementation, we would:
@@ -272,6 +355,7 @@ impl Runtime for MockRuntime {
         // 2. Update objects based on the instructions
         // 3. Generate proofs for each modified object
         // 4. Add those proofs to the receipt
+        // 5. Set commitment level to Processing initially regardless of success
         
         // Store the receipt
         mock.add_receipt(receipt.clone());
@@ -280,42 +364,90 @@ impl Runtime for MockRuntime {
     }
     
     fn rollback_transaction(&self, transaction_hash: &TransactionHash) 
-        -> Result<RuntimeTransactionReceipt, String> 
+        -> Result<bool, String> 
     {
         // Check if the transaction exists
-        let _transaction = match self.get_transaction(transaction_hash) {
+        let transaction = match self.get_transaction(transaction_hash) {
             Some(tx) => tx,
             None => return Err("Transaction not found".to_string()),
         };
         
         // Check if we have a receipt for this transaction
-        let _original_receipt = match self.get_transaction_receipt(transaction_hash) {
+        let receipt = match self.get_transaction_receipt(transaction_hash) {
             Some(receipt) => receipt,
             None => return Err("Transaction receipt not found".to_string()),
         };
         
-        // Create a new "rollback" transaction
-        let mut rollback_hash = [0u8; 32];
-        rollback_hash.copy_from_slice(&[0xFF; 32]); // Placeholder rollback hash
+        // Check if the transaction can be rolled back based on its commitment level
+        if !transaction.can_rollback() {
+            return Err(format!(
+                "Cannot rollback transaction with commitment level {:?}. Only Processing transactions can be rolled back.",
+                transaction.commitment_level
+            ));
+        }
         
-        // In a real implementation, we would:
-        // 1. Look up the previous state of all affected objects
-        // 2. Create a transaction that reverts to the previous state
-        // 3. Execute that transaction
-        
-        // For the mock, just create a receipt indicating rollback
-        let rollback_receipt = RuntimeTransactionReceipt::new(
-            rollback_hash,
-            self.current_slot,
-            true,
-            self.current_timestamp()
-        );
-        
-        // Add the rollback transaction and receipt
         let mut mock = self.clone();
-        mock.add_receipt(rollback_receipt.clone());
         
-        Ok(rollback_receipt)
+        // In a real implementation:
+        // 1. For each object affected by the transaction (found in receipt.object_proofs),
+        //    we would retrieve its state from before the transaction was executed
+        // 2. Restore each object to its previous state
+        // 3. Remove the transaction's effects from the system
+        
+        // Mark the transaction as failed (it was rolled back)
+        if let Some(mut tx) = mock.transactions.get_mut(transaction_hash).cloned() {
+            tx.fail();
+            mock.transactions.insert(*transaction_hash, tx);
+        }
+        
+        if let Some(mut rcpt) = mock.receipts.get_mut(transaction_hash).cloned() {
+            rcpt.fail();
+            rcpt.commitment_level = CommitmentLevel::Failed;
+            mock.receipts.insert(*transaction_hash, rcpt);
+        }
+        
+        // For a real implementation, we'd use storage history to restore previous versions
+        // of the objects, but for the mock we'll just mark the transaction as failed
+        
+        Ok(true)
+    }
+    
+    fn update_commitment_level(&self, transaction_hash: &TransactionHash, commitment_level: CommitmentLevel) 
+        -> Result<(), String> 
+    {
+        let mut mock = self.clone();
+        
+        // Update transaction commitment level
+        if let Some(mut tx) = mock.transactions.get_mut(transaction_hash).cloned() {
+            // Check if this is a valid state transition
+            match (tx.commitment_level, commitment_level) {
+                // Can move from Processing to any state
+                (CommitmentLevel::Processing, _) => {},
+                // Cannot change from Committed or Failed
+                (CommitmentLevel::Committed, _) => {
+                    return Err("Cannot change commitment level of a Committed transaction".to_string());
+                },
+                (CommitmentLevel::Failed, _) => {
+                    return Err("Cannot change commitment level of a Failed transaction".to_string());
+                },
+            }
+            
+            tx.commitment_level = commitment_level;
+            mock.transactions.insert(*transaction_hash, tx);
+        } else {
+            return Err("Transaction not found".to_string());
+        }
+        
+        // Update receipt commitment level
+        if let Some(mut receipt) = mock.receipts.get_mut(transaction_hash).cloned() {
+            receipt.commitment_level = commitment_level;
+            if commitment_level == CommitmentLevel::Failed {
+                receipt.success = false;
+            }
+            mock.receipts.insert(*transaction_hash, receipt);
+        }
+        
+        Ok(())
     }
     
     fn get_transaction(&self, hash: &TransactionHash) -> Option<Transaction> {
