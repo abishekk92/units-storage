@@ -1,8 +1,0 @@
-[package]
-name = "units-scheduler"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-units-core = { path = "../units-core" }
-serde = { version = "1.0", features = ["derive"] }
