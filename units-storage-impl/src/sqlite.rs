@@ -1,10 +1,12 @@
 #![cfg(feature = "sqlite")]
 
+use crate::lock_manager::SqliteLockManager;
 use crate::storage_traits::{
     UnitsProofIterator, UnitsReceiptIterator, UnitsStateProofIterator, UnitsStorage, 
     UnitsStorageIterator, UnitsStorageProofEngine, TransactionReceiptStorage, 
-    UnitsWriteAheadLog, WALEntry,
+    UnitsStorageLockIterator, UnitsWriteAheadLog, WALEntry,
 };
+use units_core::locks::{AccessIntent, LockInfo, LockType, PersistentLockManager};
 use units_core::transaction::{CommitmentLevel, TransactionReceipt};
 use anyhow::{Context, Result};
 use log;
@@ -31,6 +33,7 @@ pub struct SqliteStorage {
     rt: Arc<Runtime>,
     db_path: PathBuf,
     proof_engine: LatticeProofEngine,
+    lock_manager: SqliteLockManager,
 }
 
 /// Iterator implementation for SQLite storage
@@ -90,11 +93,18 @@ impl SqliteStorage {
             return Err(format!("Failed to initialize database schema: {}", e));
         }
 
+        // Initialize the lock manager
+        let lock_manager = match SqliteLockManager::new(pool.clone(), rt.clone()) {
+            Ok(lm) => lm,
+            Err(e) => return Err(format!("Failed to initialize lock manager: {}", e)),
+        };
+
         Ok(Self {
             pool,
             rt,
             db_path,
             proof_engine: LatticeProofEngine::new(),
+            lock_manager,
         })
     }
 
@@ -220,6 +230,65 @@ impl SqliteStorage {
 }
 
 impl UnitsStorage for SqliteStorage {
+    // Override default lock methods to use our PersistentLockManager
+    fn acquire_object_lock(
+        &self,
+        object_id: &UnitsObjectId,
+        lock_type: LockType,
+        transaction_hash: &[u8; 32],
+        timeout_ms: Option<u64>,
+    ) -> Result<bool, StorageError> {
+        self.lock_manager.acquire_lock(object_id, lock_type, transaction_hash, timeout_ms)
+    }
+
+    fn release_object_lock(
+        &self,
+        object_id: &UnitsObjectId,
+        transaction_hash: &[u8; 32],
+    ) -> Result<bool, StorageError> {
+        self.lock_manager.release_lock(object_id, transaction_hash)
+    }
+
+    fn get_object_lock_info(
+        &self,
+        object_id: &UnitsObjectId,
+    ) -> Result<Option<LockInfo>, StorageError> {
+        self.lock_manager.get_lock_info(object_id)
+    }
+
+    fn can_acquire_object_lock(
+        &self,
+        object_id: &UnitsObjectId,
+        intent: AccessIntent,
+        transaction_hash: &[u8; 32],
+    ) -> Result<bool, StorageError> {
+        self.lock_manager.can_acquire_lock(object_id, intent, transaction_hash)
+    }
+
+    fn release_all_transaction_locks(
+        &self,
+        transaction_hash: &[u8; 32],
+    ) -> Result<usize, StorageError> {
+        self.lock_manager.release_transaction_locks(transaction_hash)
+    }
+
+    fn get_all_transaction_locks(
+        &self,
+        transaction_hash: &[u8; 32],
+    ) -> UnitsStorageLockIterator<'_> {
+        // Convert the PersistentLockManager iterator to a UnitsStorageLockIterator
+        Box::new(self.lock_manager.get_transaction_locks(transaction_hash))
+    }
+
+    fn get_all_object_locks(&self, object_id: &UnitsObjectId) -> UnitsStorageLockIterator<'_> {
+        // Convert the PersistentLockManager iterator to a UnitsStorageLockIterator
+        Box::new(self.lock_manager.get_object_locks(object_id))
+    }
+
+    fn cleanup_expired_object_locks(&self) -> Result<usize, StorageError> {
+        self.lock_manager.cleanup_expired_locks()
+    }
+
     fn get(&self, id: &UnitsObjectId) -> Result<Option<TokenizedObject>, StorageError> {
         self.rt.block_on(async {
             let query =

@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 use units_core::error::StorageError;
 use units_core::id::UnitsObjectId;
-use units_core::objects::TokenizedObject;
 use units_core::locks::{AccessIntent, LockInfo, LockType};
+use units_core::objects::TokenizedObject;
 use units_core::transaction::{CommitmentLevel, TransactionEffect, TransactionReceipt};
 use units_proofs::{ProofEngine, SlotNumber, StateProof, TokenizedObjectProof};
 
@@ -214,7 +214,10 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
     }
 
     /// Check if a lock exists and get its information
-    fn get_object_lock_info(&self, _object_id: &UnitsObjectId) -> Result<Option<LockInfo>, StorageError> {
+    fn get_object_lock_info(
+        &self,
+        _object_id: &UnitsObjectId,
+    ) -> Result<Option<LockInfo>, StorageError> {
         // Default implementation returns unimplemented
         Err(StorageError::Unimplemented(
             "Getting object lock info not implemented by this storage".to_string(),
@@ -267,7 +270,7 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
             "Cleaning up expired locks not implemented by this storage".to_string(),
         ))
     }
-    
+
     /// Get an object by its ID
     ///
     /// # Parameters
@@ -750,7 +753,8 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
 // This avoids the orphan rule issues
 
 /// Helper type for a lock iterator with StorageError
-pub type UnitsStorageLockIterator<'a> = Box<dyn Iterator<Item = Result<LockInfo, StorageError>> + 'a>;
+pub type UnitsStorageLockIterator<'a> =
+    Box<dyn Iterator<Item = Result<LockInfo, StorageError>> + 'a>;
 
 /// Wrapper struct for empty lock iterator
 pub struct EmptyLockIterator<E>(std::marker::PhantomData<E>);
@@ -763,7 +767,7 @@ impl<E> EmptyLockIterator<E> {
 
 impl<E> Iterator for EmptyLockIterator<E> {
     type Item = Result<LockInfo, E>;
-    
+
     fn next(&mut self) -> Option<Self::Item> {
         None
     }

@@ -1,9 +1,11 @@
 #[cfg(feature = "rocksdb")]
+use crate::lock_manager::RocksDbLockManager;
 use crate::storage_traits::{
     UnitsProofIterator, UnitsReceiptIterator, UnitsStateProofIterator, UnitsStorage, 
     UnitsStorageIterator, UnitsStorageProofEngine, TransactionReceiptStorage,
-    UnitsWriteAheadLog,
+    UnitsStorageLockIterator, UnitsWriteAheadLog,
 };
+use units_core::locks::{AccessIntent, LockInfo, LockType, PersistentLockManager};
 #[cfg(feature = "rocksdb")]
 use units_core::transaction::TransactionReceipt;
 #[cfg(feature = "rocksdb")]
@@ -48,6 +50,8 @@ const CF_PROOF_HISTORY: &str = "proof_history";
 const CF_TRANSACTION_RECEIPTS: &str = "transaction_receipts";
 #[cfg(feature = "rocksdb")]
 const CF_OBJECT_TRANSACTIONS: &str = "object_transactions";
+#[cfg(feature = "rocksdb")]
+const CF_LOCKS: &str = "locks";
 
 #[cfg(feature = "rocksdb")]
 /// Key format for storing historical objects and proofs
@@ -95,6 +99,7 @@ pub struct RocksDbStorage {
     db_path: PathBuf,
     proof_engine: LatticeProofEngine,
     wal: FileWriteAheadLog,
+    lock_manager: RocksDbLockManager,
 }
 
 #[cfg(feature = "rocksdb")]
@@ -117,6 +122,7 @@ impl RocksDbStorage {
         let cf_proof_history = ColumnFamilyDescriptor::new(CF_PROOF_HISTORY, Options::default());
         let cf_transaction_receipts = ColumnFamilyDescriptor::new(CF_TRANSACTION_RECEIPTS, Options::default());
         let cf_object_transactions = ColumnFamilyDescriptor::new(CF_OBJECT_TRANSACTIONS, Options::default());
+        let cf_locks = ColumnFamilyDescriptor::new(CF_LOCKS, Options::default());
 
         // Try to open the database with column families
         let db = match DB::open_cf_descriptors(
@@ -130,6 +136,7 @@ impl RocksDbStorage {
                 cf_proof_history,
                 cf_transaction_receipts,
                 cf_object_transactions,
+                cf_locks,
             ],
         ) {
             Ok(db) => db,
@@ -147,6 +154,7 @@ impl RocksDbStorage {
                     CF_PROOF_HISTORY,
                     CF_TRANSACTION_RECEIPTS,
                     CF_OBJECT_TRANSACTIONS,
+                    CF_LOCKS,
                 ] {
                     if let Err(e) = raw_db.create_cf(*cf_name, &Options::default()) {
                         return Err(StorageError::Database(format!(
@@ -163,12 +171,17 @@ impl RocksDbStorage {
         let wal = FileWriteAheadLog::new();
         let wal_path = db_path.join("units_wal.log");
 
+        // Create the lock manager
+        let db_arc = Arc::new(db);
+        let lock_manager = RocksDbLockManager::new(db_arc.clone(), CF_LOCKS.to_string());
+
         // Create instance first
         let instance = Self {
-            db: Arc::new(db),
+            db: db_arc,
             db_path,
             proof_engine: LatticeProofEngine::new(),
             wal,
+            lock_manager,
         };
 
         // Initialize the WAL
@@ -403,6 +416,65 @@ impl UnitsWriteAheadLog for RocksDbStorage {
 
 #[cfg(feature = "rocksdb")]
 impl UnitsStorage for RocksDbStorage {
+    // Override default lock methods to use our PersistentLockManager
+    fn acquire_object_lock(
+        &self,
+        object_id: &UnitsObjectId,
+        lock_type: LockType,
+        transaction_hash: &[u8; 32],
+        timeout_ms: Option<u64>,
+    ) -> Result<bool, StorageError> {
+        self.lock_manager.acquire_lock(object_id, lock_type, transaction_hash, timeout_ms)
+    }
+
+    fn release_object_lock(
+        &self,
+        object_id: &UnitsObjectId,
+        transaction_hash: &[u8; 32],
+    ) -> Result<bool, StorageError> {
+        self.lock_manager.release_lock(object_id, transaction_hash)
+    }
+
+    fn get_object_lock_info(
+        &self,
+        object_id: &UnitsObjectId,
+    ) -> Result<Option<LockInfo>, StorageError> {
+        self.lock_manager.get_lock_info(object_id)
+    }
+
+    fn can_acquire_object_lock(
+        &self,
+        object_id: &UnitsObjectId,
+        intent: AccessIntent,
+        transaction_hash: &[u8; 32],
+    ) -> Result<bool, StorageError> {
+        self.lock_manager.can_acquire_lock(object_id, intent, transaction_hash)
+    }
+
+    fn release_all_transaction_locks(
+        &self,
+        transaction_hash: &[u8; 32],
+    ) -> Result<usize, StorageError> {
+        self.lock_manager.release_transaction_locks(transaction_hash)
+    }
+
+    fn get_all_transaction_locks(
+        &self,
+        transaction_hash: &[u8; 32],
+    ) -> UnitsStorageLockIterator<'_> {
+        // Convert the PersistentLockManager iterator to a UnitsStorageLockIterator
+        Box::new(self.lock_manager.get_transaction_locks(transaction_hash))
+    }
+
+    fn get_all_object_locks(&self, object_id: &UnitsObjectId) -> UnitsStorageLockIterator<'_> {
+        // Convert the PersistentLockManager iterator to a UnitsStorageLockIterator
+        Box::new(self.lock_manager.get_object_locks(object_id))
+    }
+
+    fn cleanup_expired_object_locks(&self) -> Result<usize, StorageError> {
+        self.lock_manager.cleanup_expired_locks()
+    }
+
     fn get(&self, id: &UnitsObjectId) -> Result<Option<TokenizedObject>, StorageError> {
         let cf_objects = match self.db.cf_handle(CF_OBJECTS) {
             Some(cf) => cf,
