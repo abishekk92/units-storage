@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use units_core::id::UnitsObjectId;
-use units_transaction::{Transaction, AccessIntent, ConflictResult};
+use units_transaction::{Transaction, AccessIntent, ConflictResult, CommitmentLevel};
 
 /// Trait for transaction conflict checking
 pub trait ConflictChecker {
@@ -136,7 +136,8 @@ mod tests {
                     object_intents: vec![(object1, AccessIntent::Read), (object2, AccessIntent::Read)]
                 }
             ],
-            hash: [1u8; 32]
+            hash: [1u8; 32],
+            commitment_level: CommitmentLevel::Processing
         };
         
         // Create a transaction that writes to object1
@@ -147,7 +148,8 @@ mod tests {
                     object_intents: vec![(object1, AccessIntent::Write)]
                 }
             ],
-            hash: [2u8; 32]
+            hash: [2u8; 32],
+            commitment_level: CommitmentLevel::Processing
         };
         
         // Create a transaction that writes to object2
@@ -158,7 +160,8 @@ mod tests {
                     object_intents: vec![(object2, AccessIntent::Write)]
                 }
             ],
-            hash: [3u8; 32]
+            hash: [3u8; 32],
+            commitment_level: CommitmentLevel::Processing
         };
         
         // Test read-only transaction
@@ -174,7 +177,8 @@ mod tests {
                     object_intents: vec![(object1, AccessIntent::Write)]
                 }
             ],
-            hash: [4u8; 32]
+            hash: [4u8; 32],
+            commitment_level: CommitmentLevel::Processing
         };
         
         let result = checker.check_conflicts(&write_tx1, &[write_tx1_conflicting]);
