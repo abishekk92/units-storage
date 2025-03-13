@@ -5,7 +5,7 @@ use crate::storage_traits::{
     UnitsWriteAheadLog,
 };
 #[cfg(feature = "rocksdb")]
-use units_transaction::TransactionReceipt;
+use units_core::transaction::TransactionReceipt;
 #[cfg(feature = "rocksdb")]
 use crate::wal::FileWriteAheadLog;
 #[cfg(feature = "rocksdb")]

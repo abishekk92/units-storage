@@ -5,7 +5,7 @@ use crate::storage_traits::{
     UnitsStorageIterator, UnitsStorageProofEngine, TransactionReceiptStorage, 
     UnitsWriteAheadLog, WALEntry,
 };
-use units_transaction::TransactionReceipt;
+use units_core::transaction::{CommitmentLevel, TransactionReceipt};
 use anyhow::{Context, Result};
 use log;
 use sqlx::{
@@ -841,9 +841,9 @@ impl TransactionReceiptStorage for SqliteStorage {
             
             // Insert or replace the receipt in the transaction_receipts table
             let commitment_level_int = match receipt.commitment_level {
-                units_transaction::CommitmentLevel::Processing => 0,
-                units_transaction::CommitmentLevel::Committed => 1,
-                units_transaction::CommitmentLevel::Failed => 2,
+                CommitmentLevel::Processing => 0,
+                CommitmentLevel::Committed => 1,
+                CommitmentLevel::Failed => 2,
             };
             
             sqlx::query(

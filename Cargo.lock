@@ -1972,7 +1972,6 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "units-core",
- "units-transaction",
 ]
 
 [[package]]
@@ -1992,7 +1991,6 @@ dependencies = [
  "tokio",
  "units-core",
  "units-proofs",
- "units-transaction",
 ]
 
 [[package]]
@@ -2002,6 +2000,7 @@ dependencies = [
  "serde",
  "units-core",
  "units-proofs",
+ "units-scheduler",
 ]
 
 [[package]]

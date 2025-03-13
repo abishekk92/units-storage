@@ -2,8 +2,9 @@ use serde::{Deserialize, Serialize};
 use units_core::error::StorageError;
 use units_core::id::UnitsObjectId;
 use units_core::objects::TokenizedObject;
+use units_core::locks::{AccessIntent, LockInfo, LockType};
+use units_core::transaction::{CommitmentLevel, TransactionEffect, TransactionReceipt};
 use units_proofs::{ProofEngine, SlotNumber, StateProof, TokenizedObjectProof};
-use units_transaction::{AccessIntent, CommitmentLevel, LockType, TransactionReceipt, TransactionEffect, TransactionHash};
 
 use std::collections::HashMap;
 use std::iter::Iterator;
@@ -186,6 +187,87 @@ pub trait UnitsStorageProofEngine {
 
 /// Main storage interface for UNITS objects
 pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
+    /// Acquire a lock on an object for a transaction
+    fn acquire_object_lock(
+        &self,
+        _object_id: &UnitsObjectId,
+        _lock_type: LockType,
+        _transaction_hash: &[u8; 32],
+        _timeout_ms: Option<u64>,
+    ) -> Result<bool, StorageError> {
+        // Default implementation returns unimplemented
+        Err(StorageError::Unimplemented(
+            "Acquiring object locks not implemented by this storage".to_string(),
+        ))
+    }
+
+    /// Release a lock on an object for a transaction
+    fn release_object_lock(
+        &self,
+        _object_id: &UnitsObjectId,
+        _transaction_hash: &[u8; 32],
+    ) -> Result<bool, StorageError> {
+        // Default implementation returns unimplemented
+        Err(StorageError::Unimplemented(
+            "Releasing object locks not implemented by this storage".to_string(),
+        ))
+    }
+
+    /// Check if a lock exists and get its information
+    fn get_object_lock_info(&self, _object_id: &UnitsObjectId) -> Result<Option<LockInfo>, StorageError> {
+        // Default implementation returns unimplemented
+        Err(StorageError::Unimplemented(
+            "Getting object lock info not implemented by this storage".to_string(),
+        ))
+    }
+
+    /// Check if a transaction can acquire a lock on an object
+    fn can_acquire_object_lock(
+        &self,
+        _object_id: &UnitsObjectId,
+        _intent: AccessIntent,
+        _transaction_hash: &[u8; 32],
+    ) -> Result<bool, StorageError> {
+        // Default implementation returns unimplemented
+        Err(StorageError::Unimplemented(
+            "Checking object lock availability not implemented by this storage".to_string(),
+        ))
+    }
+
+    /// Release all locks held by a transaction
+    fn release_all_transaction_locks(
+        &self,
+        _transaction_hash: &[u8; 32],
+    ) -> Result<usize, StorageError> {
+        // Default implementation returns unimplemented
+        Err(StorageError::Unimplemented(
+            "Releasing transaction locks not implemented by this storage".to_string(),
+        ))
+    }
+
+    /// Get all locks held by a transaction
+    fn get_all_transaction_locks(
+        &self,
+        _transaction_hash: &[u8; 32],
+    ) -> UnitsStorageLockIterator<'_> {
+        // Default implementation returns an empty iterator
+        Box::new(EmptyLockIterator::<StorageError>::new())
+    }
+
+    /// Get all locks on an object
+    fn get_all_object_locks(&self, _object_id: &UnitsObjectId) -> UnitsStorageLockIterator<'_> {
+        // Default implementation returns an empty iterator
+        Box::new(EmptyLockIterator::<StorageError>::new())
+    }
+
+    /// Check for expired locks and release them
+    fn cleanup_expired_object_locks(&self) -> Result<usize, StorageError> {
+        // Default implementation returns unimplemented
+        Err(StorageError::Unimplemented(
+            "Cleaning up expired locks not implemented by this storage".to_string(),
+        ))
+    }
+    
     /// Get an object by its ID
     ///
     /// # Parameters
@@ -585,11 +667,17 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
             if let Some(after) = &effect.after_image {
                 // Object was created or modified
                 let proof = self.set(after, Some(*transaction_hash))?;
-                receipt.add_proof(effect.object_id, proof);
+                // Convert TokenizedObjectProof to Vec<u8> for storage
+                let proof_bytes = bincode::serialize(&proof)
+                    .map_err(|e| StorageError::Serialization(e.to_string()))?;
+                receipt.add_proof(effect.object_id, proof_bytes);
             } else if effect.before_image.is_some() {
                 // Object was deleted
                 let proof = self.delete(&effect.object_id, Some(*transaction_hash))?;
-                receipt.add_proof(effect.object_id, proof);
+                // Convert TokenizedObjectProof to Vec<u8> for storage
+                let proof_bytes = bincode::serialize(&proof)
+                    .map_err(|e| StorageError::Serialization(e.to_string()))?;
+                receipt.add_proof(effect.object_id, proof_bytes);
             }
         }
 
@@ -657,136 +745,28 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
     }
 }
 
-/// Information about a lock held on an object
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LockInfo {
-    /// The ID of the object being locked
-    pub object_id: UnitsObjectId,
-    
-    /// The type of lock held (read or write)
-    pub lock_type: LockType,
-    
-    /// The hash of the transaction that holds this lock
-    pub transaction_hash: TransactionHash,
-    
-    /// When the lock was acquired (Unix timestamp)
-    pub acquired_at: u64,
-    
-    /// Optional timeout for the lock (in milliseconds)
-    pub timeout_ms: Option<u64>,
+// We don't need to implement PersistentLockManager for UnitsStorage directly
+// Instead, specific implementations of UnitsStorage will implement PersistentLockManager
+// This avoids the orphan rule issues
+
+/// Helper type for a lock iterator with StorageError
+pub type UnitsStorageLockIterator<'a> = Box<dyn Iterator<Item = Result<LockInfo, StorageError>> + 'a>;
+
+/// Wrapper struct for empty lock iterator
+pub struct EmptyLockIterator<E>(std::marker::PhantomData<E>);
+
+impl<E> EmptyLockIterator<E> {
+    pub fn new() -> Self {
+        Self(std::marker::PhantomData)
+    }
 }
 
-/// Iterator for traversing lock information
-pub trait UnitsLockIterator: Iterator<Item = Result<LockInfo, StorageError>> {}
-
-/// Persistent lock manager that stores lock information in the storage
-pub trait PersistentLockManager: std::fmt::Debug {
-    /// Acquire a lock on an object for a transaction
-    /// 
-    /// # Parameters
-    /// * `object_id` - The ID of the object to lock
-    /// * `lock_type` - The type of lock to acquire (read or write)
-    /// * `transaction_hash` - The hash of the transaction acquiring the lock
-    /// * `timeout_ms` - Optional timeout for the lock (in milliseconds)
-    /// 
-    /// # Returns
-    /// * `Ok(true)` - Lock was successfully acquired
-    /// * `Ok(false)` - Lock could not be acquired (conflict)
-    /// * `Err` - An error occurred while trying to acquire the lock
-    fn acquire_lock(
-        &self,
-        object_id: &UnitsObjectId,
-        lock_type: LockType,
-        transaction_hash: &TransactionHash,
-        timeout_ms: Option<u64>,
-    ) -> Result<bool, StorageError>;
+impl<E> Iterator for EmptyLockIterator<E> {
+    type Item = Result<LockInfo, E>;
     
-    /// Release a lock on an object for a transaction
-    /// 
-    /// # Parameters
-    /// * `object_id` - The ID of the object to unlock
-    /// * `transaction_hash` - The hash of the transaction releasing the lock
-    /// 
-    /// # Returns
-    /// * `Ok(true)` - Lock was successfully released
-    /// * `Ok(false)` - Lock was not found or belongs to a different transaction
-    /// * `Err` - An error occurred while trying to release the lock
-    fn release_lock(
-        &self,
-        object_id: &UnitsObjectId,
-        transaction_hash: &TransactionHash,
-    ) -> Result<bool, StorageError>;
-    
-    /// Check if a lock exists and get its information
-    /// 
-    /// # Parameters
-    /// * `object_id` - The ID of the object to check
-    /// 
-    /// # Returns
-    /// * `Some(LockInfo)` - Object is locked, returns lock information
-    /// * `None` - Object is not locked
-    fn get_lock_info(&self, object_id: &UnitsObjectId) -> Result<Option<LockInfo>, StorageError>;
-    
-    /// Check if a transaction can acquire a lock on an object
-    /// 
-    /// # Parameters
-    /// * `object_id` - The ID of the object to check
-    /// * `intent` - The access intent (Read or Write)
-    /// * `transaction_hash` - The hash of the transaction checking lock availability
-    /// 
-    /// # Returns
-    /// * `true` - Lock can be acquired
-    /// * `false` - Lock cannot be acquired
-    fn can_acquire_lock(
-        &self,
-        object_id: &UnitsObjectId,
-        intent: AccessIntent,
-        transaction_hash: &TransactionHash,
-    ) -> Result<bool, StorageError>;
-    
-    /// Release all locks held by a transaction
-    /// 
-    /// # Parameters
-    /// * `transaction_hash` - The hash of the transaction to release locks for
-    /// 
-    /// # Returns
-    /// * `Ok(count)` - Number of locks released
-    /// * `Err` - An error occurred while trying to release locks
-    fn release_transaction_locks(
-        &self,
-        transaction_hash: &TransactionHash,
-    ) -> Result<usize, StorageError>;
-    
-    /// Get all locks held by a transaction
-    /// 
-    /// # Parameters
-    /// * `transaction_hash` - The hash of the transaction to get locks for
-    /// 
-    /// # Returns
-    /// An iterator over all locks held by the transaction
-    fn get_transaction_locks(
-        &self,
-        transaction_hash: &TransactionHash,
-    ) -> Box<dyn UnitsLockIterator + '_>;
-    
-    /// Get all locks on an object
-    /// 
-    /// # Parameters
-    /// * `object_id` - The ID of the object to get locks for
-    /// 
-    /// # Returns
-    /// An iterator over all locks on the object
-    fn get_object_locks(
-        &self,
-        object_id: &UnitsObjectId,
-    ) -> Box<dyn UnitsLockIterator + '_>;
-    
-    /// Check for expired locks and release them
-    /// 
-    /// # Returns
-    /// * `Ok(count)` - Number of expired locks released
-    /// * `Err` - An error occurred while trying to release expired locks
-    fn cleanup_expired_locks(&self) -> Result<usize, StorageError>;
+    fn next(&mut self) -> Option<Self::Item> {
+        None
+    }
 }
 
 /// Iterator for traversing transaction receipts in storage

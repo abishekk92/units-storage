@@ -41,3 +41,10 @@
 - Whenever a value is set against a key in the storage, an object proof is emitted. The proof is a cryptographic proof that commits to the previous state of the object and the new state of the object.
 - Time is split into slots, each slot is X milliseconds long. The slot length is a configuration parameter.
 - All the object proofs from a slot are aggregated into a slot proof. The slot proof commits to the previous state of all the objects and the new state of all the objects.
+
+## Code Structure Guidelines
+
+- Common types like lock, transaction, and scheduling primitives have been consolidated into units-core
+- When working with storage/transaction types, prefer using types directly from units-core
+- Older code still uses units-transaction and units-scheduler, but should gradually migrate to using units-core directly
+- units-transaction and units-scheduler are effectively deprecated and maintained for backward compatibility only

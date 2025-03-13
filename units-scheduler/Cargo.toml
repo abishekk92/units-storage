@@ -5,5 +5,4 @@ edition = "2021"
 
 [dependencies]
 units-core = { path = "../units-core" }
-units-transaction = { path = "../units-transaction" }
 serde = { version = "1.0", features = ["derive"] }

@@ -1,6 +1,37 @@
 use std::collections::HashSet;
 use units_core::id::UnitsObjectId;
-use units_transaction::{AccessIntent, ConflictResult, Transaction};
+use crate::lock::AccessIntent;
+
+/// Transaction hash type (32-byte array)
+pub type TransactionHash = [u8; 32];
+
+/// The result of a transaction conflict check
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConflictResult {
+    /// No conflicts detected, transaction can proceed
+    NoConflict,
+    /// Conflicts detected with these transaction hashes
+    Conflict(Vec<TransactionHash>),
+    /// Read-only transaction, no conflict possible
+    ReadOnly,
+}
+
+/// Simple instruction structure for conflict checking
+#[derive(Debug, Clone)]
+pub struct Instruction {
+    /// The objects this instruction intends to access and their access intents
+    pub object_intents: Vec<(UnitsObjectId, AccessIntent)>,
+}
+
+/// Simple transaction structure for conflict checking
+#[derive(Debug, Clone)]
+pub struct Transaction {
+    /// List of instructions to be executed as part of this transaction
+    pub instructions: Vec<Instruction>,
+    
+    /// The hash of the transaction
+    pub hash: TransactionHash,
+}
 
 /// Trait for transaction conflict checking
 pub trait ConflictChecker {
@@ -120,8 +151,6 @@ impl ConflictChecker for BasicConflictChecker {
 mod tests {
     use super::*;
     use units_core::id::UnitsObjectId;
-    use units_transaction::CommitmentLevel;
-    use units_transaction::Instruction;
 
     #[test]
     fn test_basic_conflict_checker() {
@@ -134,31 +163,25 @@ mod tests {
         // Create a read-only transaction
         let read_tx = Transaction {
             instructions: vec![Instruction {
-                data: vec![1, 2, 3],
                 object_intents: vec![(object1, AccessIntent::Read), (object2, AccessIntent::Read)],
             }],
             hash: [1u8; 32],
-            commitment_level: CommitmentLevel::Processing,
         };
 
         // Create a transaction that writes to object1
         let write_tx1 = Transaction {
             instructions: vec![Instruction {
-                data: vec![4, 5, 6],
                 object_intents: vec![(object1, AccessIntent::Write)],
             }],
             hash: [2u8; 32],
-            commitment_level: CommitmentLevel::Processing,
         };
 
         // Create a transaction that writes to object2
         let write_tx2 = Transaction {
             instructions: vec![Instruction {
-                data: vec![7, 8, 9],
                 object_intents: vec![(object2, AccessIntent::Write)],
             }],
             hash: [3u8; 32],
-            commitment_level: CommitmentLevel::Processing,
         };
 
         // Test read-only transaction
@@ -169,11 +192,9 @@ mod tests {
         // Create a different transaction that writes to the same object
         let write_tx1_conflicting = Transaction {
             instructions: vec![Instruction {
-                data: vec![10, 11, 12],
                 object_intents: vec![(object1, AccessIntent::Write)],
             }],
             hash: [4u8; 32],
-            commitment_level: CommitmentLevel::Processing,
         };
 
         let result = checker.check_conflicts(&write_tx1, &[write_tx1_conflicting]);

@@ -12,7 +12,6 @@ categories = ["database-implementations", "cryptography"]
 [dependencies]
 units-core.workspace = true
 units-proofs.workspace = true
-units-transaction.workspace = true
 curve25519-dalek.workspace = true
 bincode.workspace = true
 serde.workspace = true
