@@ -33,15 +33,6 @@ The project is organized as a Cargo workspace with the following crates:
   - Transaction Processing
   - Transaction Commitment Levels
 
-- **units-transaction**: Transaction definitions and processing
-  - Transaction Structure
-  - Instruction Processing
-  - Commitment Levels
-
-- **units-scheduler**: Transaction scheduling and conflict resolution
-  - Conflict Detection
-  - Transaction Coordination
-
 - **units**: Convenience wrapper crate that re-exports all components
 
 ## Features
@@ -52,7 +43,7 @@ The project is organized as a Cargo workspace with the following crates:
 - **Write-Ahead Log**: Durable logging of all state changes for reliability
 - **Slot-Based Versioning**: Historical tracking of objects and their proofs
 - **Transaction Commitment Levels**: Support for processing, committed, and failed transaction states
-- **Multiple Backends**: 
+- **Multiple Backends**:
   - SQLite implementation (default)
   - RocksDB implementation (optional)
 
@@ -81,7 +72,7 @@ The proof system is designed to provide cryptographic guarantees about object st
 
 The storage system is organized into distinct layers:
 
-1. **Write-Ahead Log (WAL)**: 
+1. **Write-Ahead Log (WAL)**:
    - Durable log of all state changes before they're committed
    - Provides crash recovery and audit capabilities
    - Records both object updates and state proofs
@@ -185,10 +176,10 @@ let result = runtime.execute_transaction(&transaction).unwrap();
 if result.success {
     // Mark the transaction as committed when ready
     transaction.commit();
-    
+
     // Or if there's an issue, mark it as failed
     // transaction.fail();
-    
+
     // Check if a transaction can be rolled back
     if transaction.can_rollback() {
         // Roll back operations if needed
