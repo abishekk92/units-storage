@@ -16,6 +16,7 @@ serde.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 log.workspace = true
+hex.workspace = true
 
 # Optional dependencies
 rocksdb = { workspace = true, optional = true }

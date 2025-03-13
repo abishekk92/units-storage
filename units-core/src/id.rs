@@ -1,12 +1,21 @@
 use curve25519_dalek::edwards::CompressedEdwardsY;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::fmt;
 use std::ops::Deref;
 
 // UnitsObjectId uniquely identifies an instance of tokenized object.
 // It is a 32 byte long unique identifier, resembling a public key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct UnitsObjectId([u8; 32]);
+
+impl fmt::Display for UnitsObjectId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Format as a hex string with a prefix of the first 6 bytes
+        let prefix = hex::encode(&self.0[0..6]);
+        write!(f, "obj:{}", prefix)
+    }
+}
 
 impl Ord for UnitsObjectId {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {

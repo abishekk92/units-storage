@@ -1,13 +1,18 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use units_core::error::StorageError;
 use units_core::id::UnitsObjectId;
+use units_core::objects::TokenizedObject;
 use units_core::scheduler::{BasicConflictChecker, ConflictChecker};
-use units_core::transaction::{CommitmentLevel, ConflictResult, Transaction, TransactionHash, TransactionReceipt};
+use units_core::transaction::{CommitmentLevel, ConflictResult, Instruction, Transaction, TransactionEffect, TransactionHash, TransactionReceipt};
 use units_proofs::SlotNumber;
 
 use crate::runtime::Runtime;
+use crate::runtime_backend::{
+    ExecutionError, InstructionContext, RuntimeRegistry, 
+    WasmRuntimeBackendFactory, EbpfRuntimeBackendFactory
+};
 use units_storage_impl::storage_traits::{TransactionReceiptStorage, UnitsReceiptIterator};
 
 /// Mock implementation of the Runtime trait for testing purposes
@@ -18,15 +23,30 @@ pub struct MockRuntime {
     receipts: HashMap<TransactionHash, TransactionReceipt>,
     /// Current slot for transaction processing
     current_slot: SlotNumber,
+    /// The runtime registry for executing instructions
+    registry: RuntimeRegistry,
+    /// Mock objects in memory (used for testing)
+    objects: HashMap<UnitsObjectId, TokenizedObject>,
 }
 
 impl MockRuntime {
     /// Create a new MockRuntime
     pub fn new() -> Self {
+        // Create a registry and register available backends
+        let registry = RuntimeRegistry::new();
+        
+        // Register WebAssembly backend
+        registry.register_backend(Arc::new(WasmRuntimeBackendFactory));
+        
+        // Register eBPF backend
+        registry.register_backend(Arc::new(EbpfRuntimeBackendFactory));
+        
         Self {
             transactions: HashMap::new(),
             receipts: HashMap::new(),
             current_slot: 0,
+            registry,
+            objects: HashMap::new(),
         }
     }
 
@@ -55,7 +75,62 @@ impl MockRuntime {
     }
 }
 
+impl MockRuntime {
+    // Add a method to add objects for testing
+    pub fn add_object(&mut self, object: TokenizedObject) {
+        self.objects.insert(object.id, object);
+    }
+}
+
 impl Runtime for MockRuntime {
+    fn registry(&self) -> &RuntimeRegistry {
+        &self.registry
+    }
+    
+    fn execute_instruction(
+        &self,
+        instruction: &Instruction,
+        transaction_hash: &TransactionHash,
+        parameters: HashMap<String, String>,
+    ) -> Result<HashMap<UnitsObjectId, TokenizedObject>, ExecutionError> {
+        // Create a context with the referenced objects
+        let mut objects = HashMap::new();
+        for (object_id, _) in &instruction.object_intents {
+            if let Some(object) = self.objects.get(object_id) {
+                objects.insert(*object_id, object.clone());
+            } else {
+                return Err(ExecutionError::ObjectNotFound(*object_id));
+            }
+        }
+        
+        // Create the instruction context
+        let context = InstructionContext {
+            transaction_hash,
+            objects,
+            parameters,
+        };
+        
+        // Try to execute the instruction using the registry
+        // If this fails (no backend available), we'll use a mock execution for testing
+        if let Ok(result) = self.registry.execute_instruction(instruction, context) {
+            return Ok(result);
+        }
+        
+        // Mock execution for testing (just pretends all instructions succeed)
+        let mut result = HashMap::new();
+        for (object_id, _) in &instruction.object_intents {
+            if let Some(object) = self.objects.get(object_id) {
+                // Create a modified copy of the object to simulate execution
+                let mut modified = object.clone();
+                // In a real implementation, we would actually execute the instruction
+                // For mock, we just append the transaction hash to the data for testing
+                modified.data.extend_from_slice(transaction_hash);
+                result.insert(*object_id, modified);
+            }
+        }
+        
+        Ok(result)
+    }
     fn check_conflicts(&self, transaction: &Transaction) -> Result<ConflictResult, String> {
         // Get recent transactions for testing (last 10)
         let recent_transactions: Vec<_> = self.transactions.values().cloned().collect();
@@ -72,25 +147,59 @@ impl Runtime for MockRuntime {
     }
 
     fn execute_transaction(&self, transaction: Transaction) -> TransactionReceipt {
-        // In a mock implementation, we just pretend all transactions succeed
+        // Add transaction to our store
         let mut mock = self.clone();
         mock.add_transaction(transaction.clone());
 
         // Create a transaction receipt for this transaction with Processing commitment level
-        let receipt = TransactionReceipt::with_commitment_level(
+        let mut receipt = TransactionReceipt::with_commitment_level(
             transaction.hash,
             self.current_slot,
-            true, // Success
+            true, // Success initially
             self.current_timestamp(),
             CommitmentLevel::Processing, // Start as Processing to allow rollback
         );
 
-        // In a real implementation, we would:
-        // 1. Process each instruction in the transaction
-        // 2. Update objects based on the instructions
-        // 3. Generate proofs for each modified object
-        // 4. Add those proofs to the receipt
-        // 5. Set commitment level to Processing initially regardless of success
+        // Process each instruction in the transaction
+        let transaction_hash = transaction.hash;
+        let mut all_modified_objects = HashMap::new();
+        
+        for instruction in transaction.instructions {
+            // Empty parameters for testing
+            let parameters = HashMap::new();
+            
+            // Execute the instruction
+            match self.execute_instruction(&instruction, &transaction_hash, parameters) {
+                Ok(modified_objects) => {
+                    // Track the modified objects
+                    for (id, object) in modified_objects {
+                        all_modified_objects.insert(id, object);
+                    }
+                }
+                Err(error) => {
+                    // If any instruction fails, mark the transaction as failed
+                    receipt.set_error(format!("Instruction execution failed: {}", error));
+                    mock.add_receipt(receipt.clone());
+                    return receipt;
+                }
+            }
+        }
+        
+        // Create transaction effects for all modified objects
+        for (object_id, modified_object) in all_modified_objects {
+            // Get the previous state of the object (if any)
+            let before_image = self.objects.get(&object_id).cloned();
+            
+            // Create a transaction effect
+            let effect = TransactionEffect {
+                transaction_hash,
+                object_id,
+                before_image,
+                after_image: Some(modified_object),
+            };
+            
+            receipt.add_effect(effect);
+        }
 
         // Store the receipt
         mock.add_receipt(receipt.clone());
@@ -204,6 +313,8 @@ impl Clone for MockRuntime {
             transactions: self.transactions.clone(),
             receipts: self.receipts.clone(),
             current_slot: self.current_slot,
+            registry: RuntimeRegistry::new(), // Create a new registry since it can't be cloned
+            objects: self.objects.clone(),
         }
     }
 }

@@ -35,17 +35,72 @@ impl Default for CommitmentLevel {
     }
 }
 
+/// Identifies the type of instruction data and corresponding runtime backend
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum InstructionType {
+    /// Raw binary data for native execution
+    Binary,
+    /// WebAssembly module
+    Wasm,
+    /// eBPF bytecode
+    Ebpf,
+    /// JSON-encoded instruction
+    Json,
+}
+
+impl Default for InstructionType {
+    fn default() -> Self {
+        InstructionType::Binary
+    }
+}
+
 /// A structure representing an instruction within a transaction
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Instruction {
     /// The binary representation of the instruction
     pub data: Vec<u8>,
+    
+    /// Type of instruction data, used to select the appropriate runtime backend
+    pub instruction_type: InstructionType,
 
     /// The objects this instruction intends to access and their access intents
     pub object_intents: Vec<(UnitsObjectId, AccessIntent)>,
 }
 
 impl Instruction {
+    /// Create a new instruction with the specified type
+    pub fn new(
+        data: Vec<u8>, 
+        instruction_type: InstructionType,
+        object_intents: Vec<(UnitsObjectId, AccessIntent)>,
+    ) -> Self {
+        Self {
+            data,
+            instruction_type,
+            object_intents,
+        }
+    }
+    
+    /// Create a new binary instruction (native execution)
+    pub fn binary(data: Vec<u8>, object_intents: Vec<(UnitsObjectId, AccessIntent)>) -> Self {
+        Self::new(data, InstructionType::Binary, object_intents)
+    }
+    
+    /// Create a new WebAssembly instruction
+    pub fn wasm(data: Vec<u8>, object_intents: Vec<(UnitsObjectId, AccessIntent)>) -> Self {
+        Self::new(data, InstructionType::Wasm, object_intents)
+    }
+    
+    /// Create a new eBPF instruction
+    pub fn ebpf(data: Vec<u8>, object_intents: Vec<(UnitsObjectId, AccessIntent)>) -> Self {
+        Self::new(data, InstructionType::Ebpf, object_intents)
+    }
+    
+    /// Create a new JSON instruction
+    pub fn json(json: String, object_intents: Vec<(UnitsObjectId, AccessIntent)>) -> Self {
+        Self::new(json.into_bytes(), InstructionType::Json, object_intents)
+    }
+    
     /// Acquire all locks needed for this instruction
     ///
     /// This acquires locks for all objects according to their access intents.

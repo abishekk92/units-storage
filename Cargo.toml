@@ -29,6 +29,7 @@ thiserror = "1.0"
 anyhow = "1.0"
 log = "0.4"
 tempfile = "3.8"
+hex = "0.4.3"
 
 # Internal crates
 units-core = { path = "./units-core" }

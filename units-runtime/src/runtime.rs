@@ -1,14 +1,20 @@
 // Import types from units-core
+pub use units_core::id::UnitsObjectId;
 pub use units_core::locks::AccessIntent;
+pub use units_core::objects::TokenizedObject;
 pub use units_core::transaction::{
-    CommitmentLevel, ConflictResult, Instruction, Transaction, TransactionEffect,
+    CommitmentLevel, ConflictResult, Instruction, InstructionType, Transaction, TransactionEffect,
     TransactionHash, TransactionReceipt,
 };
+use crate::runtime_backend::{RuntimeRegistry, ExecutionError};
+use std::collections::HashMap;
 
 // Moved UnitsReceiptIterator and TransactionReceiptStorage to units-storage-impl::storage_traits
 
 /// Runtime for executing transactions that modify TokenizedObjects
 pub trait Runtime {
+    /// Get the runtime registry used by this runtime
+    fn registry(&self) -> &RuntimeRegistry;
     /// Check for potential conflicts with pending or recent transactions
     ///
     /// This allows detecting conflicts before executing a transaction.
@@ -25,6 +31,31 @@ pub trait Runtime {
         Ok(ConflictResult::NoConflict)
     }
 
+    /// Execute a single instruction with the appropriate runtime backend
+    ///
+    /// This method fetches the objects referenced by the instruction, builds the execution context,
+    /// selects the appropriate runtime backend based on the instruction type, and executes
+    /// the instruction.
+    ///
+    /// # Parameters
+    /// * `instruction` - The instruction to execute
+    /// * `transaction_hash` - The hash of the transaction containing this instruction
+    /// * `parameters` - Additional runtime parameters for the instruction
+    ///
+    /// # Returns
+    /// A map of object IDs to their updated state after execution
+    fn execute_instruction(
+        &self,
+        _instruction: &Instruction,
+        _transaction_hash: &TransactionHash,
+        _parameters: HashMap<String, String>,
+    ) -> Result<HashMap<UnitsObjectId, TokenizedObject>, ExecutionError> {
+        // This is just a placeholder - implementations must override this method
+        Err(ExecutionError::ExecutionFailed(
+            "Default execute_instruction not implemented".to_string()
+        ))
+    }
+    
     /// Execute a transaction and return a transaction receipt with proofs
     fn execute_transaction(&self, transaction: Transaction) -> TransactionReceipt;
 
