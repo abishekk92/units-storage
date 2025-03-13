@@ -110,7 +110,12 @@ impl SqliteStorage {
 
     /// Creates the necessary tables in the database
     async fn initialize_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
-        // Table for objects
+        // Enable foreign key constraints
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(pool)
+            .await?;
+
+        // Table for objects - this is our base table
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS objects (
                 id BLOB PRIMARY KEY,
@@ -123,6 +128,16 @@ impl SqliteStorage {
         .execute(pool)
         .await?;
 
+        // Table for slots to track time periods
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS slots (
+                slot_number INTEGER PRIMARY KEY,
+                timestamp INTEGER NOT NULL
+            )"
+        )
+        .execute(pool)
+        .await?;
+
         // Table for storing object proofs
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS object_proofs (
@@ -130,7 +145,9 @@ impl SqliteStorage {
                 proof_data BLOB NOT NULL,
                 slot INTEGER NOT NULL DEFAULT 0,
                 prev_proof_hash BLOB,
-                transaction_hash BLOB
+                transaction_hash BLOB,
+                FOREIGN KEY (object_id) REFERENCES objects(id) ON DELETE CASCADE,
+                FOREIGN KEY (slot) REFERENCES slots(slot_number) ON DELETE CASCADE
             )",
         )
         .execute(pool)
@@ -142,21 +159,8 @@ impl SqliteStorage {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp INTEGER NOT NULL,
                 slot INTEGER NOT NULL DEFAULT 0,
-                proof_data BLOB NOT NULL
-            )",
-        )
-        .execute(pool)
-        .await?;
-
-        // Table for storing write-ahead log entries (for future use)
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS wal_entries (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                object_id BLOB NOT NULL,
-                slot INTEGER NOT NULL,
-                timestamp INTEGER NOT NULL,
                 proof_data BLOB NOT NULL,
-                transaction_hash BLOB
+                FOREIGN KEY (slot) REFERENCES slots(slot_number) ON DELETE CASCADE
             )",
         )
         .execute(pool)
@@ -171,7 +175,25 @@ impl SqliteStorage {
                 success INTEGER NOT NULL,
                 commitment_level INTEGER NOT NULL,
                 error_message TEXT,
-                receipt_data BLOB NOT NULL
+                receipt_data BLOB NOT NULL,
+                FOREIGN KEY (slot) REFERENCES slots(slot_number) ON DELETE CASCADE
+            )",
+        )
+        .execute(pool)
+        .await?;
+
+        // Table for storing write-ahead log entries (for future use)
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS wal_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                object_id BLOB NOT NULL,
+                slot INTEGER NOT NULL,
+                timestamp INTEGER NOT NULL,
+                proof_data BLOB NOT NULL,
+                transaction_hash BLOB,
+                FOREIGN KEY (object_id) REFERENCES objects(id) ON DELETE CASCADE,
+                FOREIGN KEY (slot) REFERENCES slots(slot_number) ON DELETE CASCADE,
+                FOREIGN KEY (transaction_hash) REFERENCES transaction_receipts(transaction_hash) ON DELETE SET NULL
             )",
         )
         .execute(pool)
@@ -184,24 +206,81 @@ impl SqliteStorage {
                 transaction_hash BLOB NOT NULL,
                 slot INTEGER NOT NULL,
                 PRIMARY KEY (object_id, transaction_hash),
-                FOREIGN KEY (transaction_hash) REFERENCES transaction_receipts(transaction_hash)
+                FOREIGN KEY (object_id) REFERENCES objects(id) ON DELETE CASCADE,
+                FOREIGN KEY (transaction_hash) REFERENCES transaction_receipts(transaction_hash) ON DELETE CASCADE,
+                FOREIGN KEY (slot) REFERENCES slots(slot_number) ON DELETE CASCADE
             )",
         )
         .execute(pool)
         .await?;
+        
+        // Table for historical object states
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS object_history (
+                object_id BLOB NOT NULL,
+                slot INTEGER NOT NULL,
+                holder BLOB NOT NULL,
+                token_type INTEGER NOT NULL,
+                token_manager BLOB NOT NULL,
+                data BLOB,
+                PRIMARY KEY (object_id, slot),
+                FOREIGN KEY (object_id) REFERENCES objects(id) ON DELETE CASCADE,
+                FOREIGN KEY (slot) REFERENCES slots(slot_number) ON DELETE CASCADE
+            )"
+        )
+        .execute(pool)
+        .await?;
 
-        // Create an index for slot-based queries
+        // Create indexes for efficient queries
+        
+        // Slot-based indexes
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_transaction_receipts_slot 
              ON transaction_receipts(slot)",
         )
         .execute(pool)
         .await?;
-
-        // Create an index for object-based queries
+        
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_object_proofs_slot 
+             ON object_proofs(slot)",
+        )
+        .execute(pool)
+        .await?;
+        
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_state_proofs_slot 
+             ON state_proofs(slot)",
+        )
+        .execute(pool)
+        .await?;
+        
+        // Object-based indexes
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_object_transactions_object_id 
              ON object_transactions(object_id)",
+        )
+        .execute(pool)
+        .await?;
+        
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_wal_entries_object_id 
+             ON wal_entries(object_id)",
+        )
+        .execute(pool)
+        .await?;
+        
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_object_history_object_id 
+             ON object_history(object_id)",
+        )
+        .execute(pool)
+        .await?;
+        
+        // Transaction-based indexes
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_wal_entries_transaction_hash 
+             ON wal_entries(transaction_hash) WHERE transaction_hash IS NOT NULL",
         )
         .execute(pool)
         .await?;
@@ -348,13 +427,69 @@ impl UnitsStorage for SqliteStorage {
 
     fn get_at_slot(
         &self,
-        _id: &UnitsObjectId,
-        _slot: SlotNumber,
+        id: &UnitsObjectId,
+        slot: SlotNumber,
     ) -> Result<Option<TokenizedObject>, StorageError> {
-        // Not implemented yet for SQLite
-        Err(StorageError::Other(
-            "get_at_slot not implemented for SQLite".to_string(),
-        ))
+        self.rt.block_on(async {
+            // Query the object history table for the state at or before the given slot
+            let query = "
+                SELECT holder, token_type, token_manager, data
+                FROM object_history
+                WHERE object_id = ? AND slot <= ?
+                ORDER BY slot DESC
+                LIMIT 1
+            ";
+
+            let row = sqlx::query(query)
+                .bind(id.as_ref())
+                .bind(slot as i64)
+                .fetch_optional(&self.pool)
+                .await
+                .with_context(|| format!("Failed to fetch object history for ID: {:?} at slot {}", id, slot))?;
+
+            if let Some(row) = row {
+                let holder_blob: Vec<u8> = row.get(0);
+                let token_type_int: i64 = row.get(1);
+                let token_manager_blob: Vec<u8> = row.get(2);
+                let data: Option<Vec<u8>> = row.get(3);
+                
+                // If data is NULL, this was a tombstone record (deletion marker)
+                if data.is_none() {
+                    return Ok(None);
+                }
+                
+                let data = data.unwrap_or_default();
+
+                // Convert to UnitsObjectId
+                let mut holder_array = [0u8; 32];
+                let mut token_manager_array = [0u8; 32];
+
+                if holder_blob.len() == 32 {
+                    holder_array.copy_from_slice(&holder_blob);
+                }
+
+                if token_manager_blob.len() == 32 {
+                    token_manager_array.copy_from_slice(&token_manager_blob);
+                }
+
+                // Convert token type
+                let token_type = match Self::int_to_token_type(token_type_int) {
+                    Ok(tt) => tt,
+                    Err(e) => return Err(StorageError::Other(e)),
+                };
+
+                Ok(Some(TokenizedObject {
+                    id: *id,
+                    holder: UnitsObjectId::new(holder_array),
+                    token_type,
+                    token_manager: UnitsObjectId::new(token_manager_array),
+                    data,
+                }))
+            } else {
+                // No historical record found at or before the requested slot
+                Ok(None)
+            }
+        })
     }
 
     fn set(
@@ -390,6 +525,19 @@ impl UnitsStorage for SqliteStorage {
             let proof = self.proof_engine.generate_object_proof(object, prev_proof.as_ref(), transaction_hash)
                 .with_context(|| format!("Failed to generate proof for object ID: {:?}", object.id))?;
 
+            // Ensure the slot exists in the slots table (for foreign key constraint)
+            let current_time = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+                
+            sqlx::query("INSERT OR IGNORE INTO slots (slot_number, timestamp) VALUES (?, ?)")
+                .bind(proof.slot as i64)
+                .bind(current_time as i64)
+                .execute(&mut *tx)
+                .await
+                .with_context(|| format!("Failed to register slot: {}", proof.slot))?;
+
             // Store the proof with its metadata including transaction hash
             sqlx::query("INSERT OR REPLACE INTO object_proofs (object_id, proof_data, slot, prev_proof_hash, transaction_hash) VALUES (?, ?, ?, ?, ?)")
                 .bind(object.id.as_ref())
@@ -400,6 +548,18 @@ impl UnitsStorage for SqliteStorage {
                 .execute(&mut *tx)
                 .await
                 .with_context(|| format!("Failed to store proof for object ID: {:?}", object.id))?;
+                
+            // Store a snapshot in the object history table
+            sqlx::query("INSERT OR REPLACE INTO object_history (object_id, slot, holder, token_type, token_manager, data) VALUES (?, ?, ?, ?, ?, ?)")
+                .bind(object.id.as_ref())
+                .bind(proof.slot as i64)
+                .bind(object.holder.as_ref())
+                .bind(token_type_int)
+                .bind(object.token_manager.as_ref())
+                .bind(&object.data)
+                .execute(&mut *tx)
+                .await
+                .with_context(|| format!("Failed to store object history for ID: {:?}", object.id))?;
 
             // Commit the transaction
             tx.commit()
@@ -450,8 +610,33 @@ impl UnitsStorage for SqliteStorage {
                 .begin()
                 .await
                 .with_context(|| "Failed to start transaction for delete operation")?;
+                
+            // Ensure the slot exists in the slots table (for foreign key constraint)
+            let current_time = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+                
+            sqlx::query("INSERT OR IGNORE INTO slots (slot_number, timestamp) VALUES (?, ?)")
+                .bind(proof.slot as i64)
+                .bind(current_time as i64)
+                .execute(&mut *tx)
+                .await
+                .with_context(|| format!("Failed to register slot: {}", proof.slot))?;
+                
+            // Create a special historical entry for the deletion
+            let token_type_int = Self::token_type_to_int(&object.token_type);
+            sqlx::query("INSERT INTO object_history (object_id, slot, holder, token_type, token_manager, data) VALUES (?, ?, ?, ?, ?, NULL)")
+                .bind(id.as_ref())
+                .bind(proof.slot as i64)
+                .bind(object.holder.as_ref())
+                .bind(token_type_int)
+                .bind(object.token_manager.as_ref())
+                .execute(&mut *tx)
+                .await
+                .with_context(|| format!("Failed to store deletion history for ID: {:?}", id))?;
 
-            // Delete from object_proofs
+            // Delete from object_proofs (must happen before deleting from objects due to FK constraint)
             sqlx::query("DELETE FROM object_proofs WHERE object_id = ?")
                 .bind(id.as_ref())
                 .execute(&mut *tx)
@@ -498,6 +683,28 @@ impl UnitsStorageProofEngine for SqliteStorage {
 
     fn generate_state_proof(&self, slot: Option<SlotNumber>) -> Result<StateProof, StorageError> {
         self.rt.block_on(async {
+            // Use a transaction to ensure consistency
+            let mut tx = self.pool
+                .begin()
+                .await
+                .with_context(|| "Failed to start transaction for state proof generation")?;
+                
+            // Use provided slot or current slot
+            let slot_to_use = slot.unwrap_or_else(proofs::current_slot);
+            
+            // Ensure the slot exists in the slots table (for foreign key constraint)
+            let current_time = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+                
+            sqlx::query("INSERT OR IGNORE INTO slots (slot_number, timestamp) VALUES (?, ?)")
+                .bind(slot_to_use as i64)
+                .bind(current_time as i64)
+                .execute(&mut *tx)
+                .await
+                .with_context(|| format!("Failed to register slot: {}", slot_to_use))?;
+
             // Get all objects and their proofs
             let query = "SELECT o.id, p.proof_data
                          FROM objects o
@@ -536,7 +743,7 @@ impl UnitsStorageProofEngine for SqliteStorage {
                 // Create the proof with the new structure
                 let proof = TokenizedObjectProof {
                     object_id: id.clone(),
-                    slot: slot.unwrap_or_else(|| proofs::current_slot()),
+                    slot: slot_to_use,
                     object_hash,
                     prev_proof_hash: None,
                     transaction_hash: None,
@@ -548,24 +755,43 @@ impl UnitsStorageProofEngine for SqliteStorage {
 
             // Generate the state proof
             // Get the latest state proof if one exists
-            let latest_state_proof = None; // We don't track history in SQLite yet
-
-            // Use provided slot or current slot
-            let slot_to_use = slot.unwrap_or_else(proofs::current_slot);
-
+            let query = "SELECT proof_data FROM state_proofs ORDER BY id DESC LIMIT 1";
+            let latest_state_proof_row = sqlx::query(query).fetch_optional(&self.pool).await
+                .with_context(|| "Failed to fetch latest state proof")?;
+                
+            let latest_state_proof = if let Some(row) = latest_state_proof_row {
+                let proof_data: Vec<u8> = row.get(0);
+                // Construct a basic StateProof - note that in a real implementation 
+                // we would need to deserialize the full proof
+                Some(StateProof {
+                    slot: 0, // This will be replaced by the engine
+                    prev_state_hash: None,
+                    proof_data,
+                })
+            } else {
+                None
+            };
+            
             // Generate the state proof with the latest state proof if available
             let state_proof = self.proof_engine.generate_state_proof(
                 &object_proofs,
-                latest_state_proof,
+                latest_state_proof.as_ref(),
                 slot_to_use,
             )?;
 
-            // Store the proof for future reference
-            let _ = sqlx::query("INSERT INTO state_proofs (timestamp, proof_data) VALUES (?, ?)")
+            // Store the proof for future reference with proper slot reference
+            sqlx::query("INSERT INTO state_proofs (timestamp, slot, proof_data) VALUES (?, ?, ?)")
                 .bind(chrono::Utc::now().timestamp())
+                .bind(state_proof.slot as i64)
                 .bind(&state_proof.proof_data)
-                .execute(&self.pool)
-                .await;
+                .execute(&mut *tx)
+                .await
+                .with_context(|| "Failed to store state proof")?;
+                
+            // Commit the transaction
+            tx.commit()
+                .await
+                .with_context(|| "Failed to commit state proof transaction")?;
 
             Ok(state_proof)
         })
@@ -903,6 +1129,19 @@ impl TransactionReceiptStorage for SqliteStorage {
                 .begin()
                 .await
                 .with_context(|| "Failed to start database transaction for storing receipt")?;
+                
+            // Ensure the slot exists in the slots table (for foreign key constraint)
+            let current_time = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+                
+            sqlx::query("INSERT OR IGNORE INTO slots (slot_number, timestamp) VALUES (?, ?)")
+                .bind(receipt.slot as i64)
+                .bind(current_time as i64)
+                .execute(&mut *tx)
+                .await
+                .with_context(|| format!("Failed to register slot: {}", receipt.slot))?;
             
             // Serialize the receipt
             let receipt_data = bincode::serialize(receipt)
@@ -942,6 +1181,16 @@ impl TransactionReceiptStorage for SqliteStorage {
             
             // Insert mappings for all objects affected by this transaction
             for object_id in receipt.object_proofs.keys() {
+                // Ensure the object exists (insert a placeholder if needed for foreign key constraint)
+                sqlx::query(
+                    "INSERT OR IGNORE INTO objects (id, holder, token_type, token_manager, data) 
+                     VALUES (?, zeroblob(32), 0, zeroblob(32), NULL)"
+                )
+                .bind(object_id.as_ref())
+                .execute(&mut *tx)
+                .await
+                .with_context(|| format!("Failed to ensure object exists: {:?}", object_id))?;
+                
                 sqlx::query(
                     "INSERT INTO object_transactions (object_id, transaction_hash, slot) VALUES (?, ?, ?)"
                 )
@@ -960,6 +1209,16 @@ impl TransactionReceiptStorage for SqliteStorage {
                 if receipt.object_proofs.contains_key(&effect.object_id) {
                     continue;
                 }
+                
+                // Ensure the object exists (insert a placeholder if needed for foreign key constraint)
+                sqlx::query(
+                    "INSERT OR IGNORE INTO objects (id, holder, token_type, token_manager, data) 
+                     VALUES (?, zeroblob(32), 0, zeroblob(32), NULL)"
+                )
+                .bind(effect.object_id.as_ref())
+                .execute(&mut *tx)
+                .await
+                .with_context(|| format!("Failed to ensure object exists: {:?}", effect.object_id))?;
                 
                 sqlx::query(
                     "INSERT INTO object_transactions (object_id, transaction_hash, slot) VALUES (?, ?, ?)"
