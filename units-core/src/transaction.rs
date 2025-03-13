@@ -54,6 +54,38 @@ impl Default for InstructionType {
     }
 }
 
+/// Identifies the type of runtime needed to execute program code
+/// 
+/// We only support runtimes with proper isolation guarantees:
+/// - WebAssembly (using wasmtime, wasmer, etc.)
+/// - eBPF (using rbpf or similar)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum RuntimeType {
+    /// WebAssembly virtual machine
+    Wasm,
+    /// eBPF virtual machine
+    Ebpf,
+}
+
+impl Default for RuntimeType {
+    fn default() -> Self {
+        RuntimeType::Wasm
+    }
+}
+
+/// Mapping between instruction types and runtime types
+impl From<InstructionType> for RuntimeType {
+    fn from(instruction_type: InstructionType) -> Self {
+        match instruction_type {
+            // Only support runtime types with proper isolation
+            InstructionType::Wasm => RuntimeType::Wasm,
+            InstructionType::Ebpf => RuntimeType::Ebpf,
+            // Other instruction types map to WebAssembly by default
+            _ => RuntimeType::Wasm,
+        }
+    }
+}
+
 /// A structure representing an instruction within a transaction
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Instruction {

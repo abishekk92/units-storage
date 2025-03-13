@@ -1927,6 +1927,7 @@ dependencies = [
  "log",
  "rocksdb",
  "serde",
+ "serde_json",
  "sha2",
  "sqlx",
  "thiserror",

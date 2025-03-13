@@ -18,10 +18,9 @@ pub use verification::{detect_double_spend, verify_transaction_included, ProofVe
 
 // Re-export runtime backend types
 pub use runtime_backend::{
-    RuntimeBackend, RuntimeBackendFactory, RuntimeRegistry, 
+    RuntimeBackend, RuntimeBackendManager,
     InstructionContext, InstructionResult, ExecutionError,
-    WasmRuntimeBackend, WasmRuntimeBackendFactory,
-    EbpfRuntimeBackend, EbpfRuntimeBackendFactory,
+    WasmRuntimeBackend, EbpfRuntimeBackend,
 };
 
 // Re-export MockRuntime and InMemoryReceiptStorage for testing

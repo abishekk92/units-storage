@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use units_core::error::StorageError;
 use units_core::id::UnitsObjectId;
@@ -10,8 +10,7 @@ use units_proofs::SlotNumber;
 
 use crate::runtime::Runtime;
 use crate::runtime_backend::{
-    ExecutionError, InstructionContext, RuntimeRegistry, 
-    WasmRuntimeBackendFactory, EbpfRuntimeBackendFactory
+    ExecutionError, InstructionContext, RuntimeBackendManager
 };
 use units_storage_impl::storage_traits::{TransactionReceiptStorage, UnitsReceiptIterator};
 
@@ -23,8 +22,8 @@ pub struct MockRuntime {
     receipts: HashMap<TransactionHash, TransactionReceipt>,
     /// Current slot for transaction processing
     current_slot: SlotNumber,
-    /// The runtime registry for executing instructions
-    registry: RuntimeRegistry,
+    /// The runtime backend manager for executing instructions
+    backend_manager: RuntimeBackendManager,
     /// Mock objects in memory (used for testing)
     objects: HashMap<UnitsObjectId, TokenizedObject>,
 }
@@ -32,20 +31,14 @@ pub struct MockRuntime {
 impl MockRuntime {
     /// Create a new MockRuntime
     pub fn new() -> Self {
-        // Create a registry and register available backends
-        let registry = RuntimeRegistry::new();
-        
-        // Register WebAssembly backend
-        registry.register_backend(Arc::new(WasmRuntimeBackendFactory));
-        
-        // Register eBPF backend
-        registry.register_backend(Arc::new(EbpfRuntimeBackendFactory));
+        // Create a runtime backend manager with default backends
+        let backend_manager = RuntimeBackendManager::with_default_backends();
         
         Self {
             transactions: HashMap::new(),
             receipts: HashMap::new(),
             current_slot: 0,
-            registry,
+            backend_manager,
             objects: HashMap::new(),
         }
     }
@@ -83,53 +76,46 @@ impl MockRuntime {
 }
 
 impl Runtime for MockRuntime {
-    fn registry(&self) -> &RuntimeRegistry {
-        &self.registry
+    fn backend_manager(&self) -> &RuntimeBackendManager {
+        &self.backend_manager
     }
     
     fn execute_instruction(
         &self,
         instruction: &Instruction,
         transaction_hash: &TransactionHash,
+        objects: HashMap<UnitsObjectId, TokenizedObject>,
         parameters: HashMap<String, String>,
     ) -> Result<HashMap<UnitsObjectId, TokenizedObject>, ExecutionError> {
-        // Create a context with the referenced objects
-        let mut objects = HashMap::new();
-        for (object_id, _) in &instruction.object_intents {
-            if let Some(object) = self.objects.get(object_id) {
-                objects.insert(*object_id, object.clone());
-            } else {
-                return Err(ExecutionError::ObjectNotFound(*object_id));
-            }
-        }
-        
-        // Create the instruction context
+        // Create the context for execution
         let context = InstructionContext {
             transaction_hash,
-            objects,
+            objects: objects.clone(),
             parameters,
+            program_id: None,
+            entrypoint: None,
         };
         
-        // Try to execute the instruction using the registry
+        // Try to execute the instruction using the backend manager
         // If this fails (no backend available), we'll use a mock execution for testing
-        if let Ok(result) = self.registry.execute_instruction(instruction, context) {
-            return Ok(result);
-        }
-        
-        // Mock execution for testing (just pretends all instructions succeed)
-        let mut result = HashMap::new();
-        for (object_id, _) in &instruction.object_intents {
-            if let Some(object) = self.objects.get(object_id) {
-                // Create a modified copy of the object to simulate execution
-                let mut modified = object.clone();
-                // In a real implementation, we would actually execute the instruction
-                // For mock, we just append the transaction hash to the data for testing
-                modified.data.extend_from_slice(transaction_hash);
-                result.insert(*object_id, modified);
+        match self.backend_manager.execute_instruction(instruction, context) {
+            Ok(result) => Ok(result),
+            Err(_) => {
+                // Mock execution for testing (just pretends all instructions succeed)
+                let mut result = HashMap::new();
+                for (object_id, _) in &instruction.object_intents {
+                    if let Some(object) = objects.get(object_id) {
+                        // Create a modified copy of the object to simulate execution
+                        let mut modified = object.clone();
+                        // For mock, we just append the transaction hash to the data for testing
+                        modified.data.extend_from_slice(transaction_hash);
+                        result.insert(*object_id, modified);
+                    }
+                }
+                
+                Ok(result)
             }
         }
-        
-        Ok(result)
     }
     fn check_conflicts(&self, transaction: &Transaction) -> Result<ConflictResult, String> {
         // Get recent transactions for testing (last 10)
@@ -165,11 +151,27 @@ impl Runtime for MockRuntime {
         let mut all_modified_objects = HashMap::new();
         
         for instruction in transaction.instructions {
+            // Load the objects this instruction needs access to
+            let mut objects = HashMap::new();
+            for (object_id, _) in &instruction.object_intents {
+                if let Some(object) = self.objects.get(object_id) {
+                    // Use the latest version of this object from our modified objects map
+                    // if it's already been modified by a previous instruction in this transaction
+                    let latest_object = all_modified_objects.get(object_id).unwrap_or(object);
+                    objects.insert(*object_id, latest_object.clone());
+                } else {
+                    // If we can't find an object this instruction needs, mark transaction as failed
+                    receipt.set_error(format!("Object not found: {}", object_id));
+                    mock.add_receipt(receipt.clone());
+                    return receipt;
+                }
+            }
+            
             // Empty parameters for testing
             let parameters = HashMap::new();
             
             // Execute the instruction
-            match self.execute_instruction(&instruction, &transaction_hash, parameters) {
+            match self.execute_instruction(&instruction, &transaction_hash, objects, parameters) {
                 Ok(modified_objects) => {
                     // Track the modified objects
                     for (id, object) in modified_objects {
@@ -313,7 +315,7 @@ impl Clone for MockRuntime {
             transactions: self.transactions.clone(),
             receipts: self.receipts.clone(),
             current_slot: self.current_slot,
-            registry: RuntimeRegistry::new(), // Create a new registry since it can't be cloned
+            backend_manager: RuntimeBackendManager::with_default_backends(), // Create a new manager with same backends
             objects: self.objects.clone(),
         }
     }

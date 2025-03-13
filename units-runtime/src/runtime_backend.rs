@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use units_core::id::UnitsObjectId;
 use units_core::objects::TokenizedObject;
-use units_core::transaction::{Instruction, InstructionType, TransactionHash};
+use units_core::transaction::{Instruction, InstructionType, RuntimeType, TransactionHash};
 
 /// Result type for instruction execution
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,6 +25,12 @@ pub struct InstructionContext<'a> {
     
     /// Additional parameters available to the instruction
     pub parameters: HashMap<String, String>,
+    
+    /// The program object ID being executed (if this is a program call)
+    pub program_id: Option<UnitsObjectId>,
+    
+    /// The entrypoint function to call (if this is a program call)
+    pub entrypoint: Option<String>,
 }
 
 /// Trait defining the interface for a runtime backend
@@ -32,8 +38,14 @@ pub trait RuntimeBackend: Send + Sync {
     /// Get a string identifier for this runtime backend
     fn name(&self) -> &str;
     
-    /// Check if this runtime can execute the provided instruction
-    fn can_execute(&self, instruction: &Instruction) -> bool;
+    /// Get the runtime type this backend handles
+    fn runtime_type(&self) -> RuntimeType;
+    
+    /// Check if this runtime can execute the provided instruction type
+    fn can_execute(&self, instruction_type: InstructionType) -> bool {
+        // Default implementation maps instruction types to runtime types
+        RuntimeType::from(instruction_type) == self.runtime_type()
+    }
     
     /// Execute an instruction with the provided context
     /// 
@@ -44,91 +56,164 @@ pub trait RuntimeBackend: Send + Sync {
         instruction: &Instruction,
         context: InstructionContext<'a>,
     ) -> InstructionResult;
-}
-
-/// Factory trait for creating runtime backends
-pub trait RuntimeBackendFactory: Send + Sync {
-    /// Create a new instance of the runtime backend
-    fn create(&self) -> Box<dyn RuntimeBackend>;
     
-    /// Get the name of the runtime backend this factory creates
-    fn backend_name(&self) -> &str;
-    
-    /// Get the instruction type this factory's backends can execute
-    fn instruction_type(&self) -> InstructionType;
+    /// Execute a program stored in a TokenizedObject
+    /// 
+    /// This specialized method handles executing a code object with the given entrypoint.
+    fn execute_program<'a>(
+        &self,
+        program: &TokenizedObject,
+        entrypoint: &str,
+        args: &[u8],
+        context: InstructionContext<'a>,
+    ) -> InstructionResult;
 }
 
 /// Error returned when execution fails
 #[derive(Debug, thiserror::Error)]
 pub enum ExecutionError {
     #[error("No runtime backend available for instruction type: {0:?}")]
-    NoBackendAvailable(InstructionType),
+    NoBackendAvailableForInstruction(InstructionType),
+    
+    #[error("No runtime backend available for runtime type: {0:?}")]
+    NoBackendAvailableForRuntime(RuntimeType),
     
     #[error("Execution failed: {0}")]
     ExecutionFailed(String),
     
     #[error("Object not found in execution context: {0}")]
     ObjectNotFound(UnitsObjectId),
+    
+    #[error("Program object not found: {0}")]
+    ProgramNotFound(UnitsObjectId),
+    
+    #[error("Invalid program object: {0}")]
+    InvalidProgram(UnitsObjectId),
+    
+    #[error("Invalid entrypoint: {0}")]
+    InvalidEntrypoint(String),
 }
 
-/// Runtime registry that manages available runtime backends
-pub struct RuntimeRegistry {
-    /// Map of instruction types to their runtime backend factories
-    backends: RwLock<HashMap<InstructionType, Arc<dyn RuntimeBackendFactory>>>,
+/// Runtime backend manager that provides access to different backend implementations
+pub struct RuntimeBackendManager {
+    /// Available runtime backends by instruction type (for backward compatibility)
+    backends_by_instruction: HashMap<InstructionType, Arc<dyn RuntimeBackend>>,
+    
+    /// Available runtime backends by runtime type (primary mapping)
+    backends_by_runtime: HashMap<RuntimeType, Arc<dyn RuntimeBackend>>,
 }
 
-impl RuntimeRegistry {
-    /// Create a new runtime registry
+impl RuntimeBackendManager {
+    /// Create a new runtime backend manager
     pub fn new() -> Self {
         Self {
-            backends: RwLock::new(HashMap::new()),
+            backends_by_instruction: HashMap::new(),
+            backends_by_runtime: HashMap::new(),
         }
     }
     
-    /// Register a runtime backend factory
-    pub fn register_backend(&self, factory: Arc<dyn RuntimeBackendFactory>) {
-        let mut backends = self.backends.write().unwrap();
-        backends.insert(factory.instruction_type(), factory);
+    /// Register a runtime backend
+    pub fn register_backend(&mut self, backend: Arc<dyn RuntimeBackend>) {
+        // Get the runtime type from the backend
+        let runtime_type = backend.runtime_type();
+        
+        // Store in the runtime type map
+        self.backends_by_runtime.insert(runtime_type, backend.clone());
+        
+        // Also store in the instruction type map based on mapping
+        match runtime_type {
+            RuntimeType::Wasm => {
+                self.backends_by_instruction.insert(InstructionType::Wasm, backend.clone());
+                // Map Binary and Json instructions to Wasm as well (default behavior)
+                self.backends_by_instruction.insert(InstructionType::Binary, backend.clone());
+                self.backends_by_instruction.insert(InstructionType::Json, backend);
+            }
+            RuntimeType::Ebpf => {
+                self.backends_by_instruction.insert(InstructionType::Ebpf, backend);
+            }
+        }
     }
     
     /// Get a runtime backend for a specific instruction type
-    pub fn get_backend(&self, instruction_type: InstructionType) -> Option<Box<dyn RuntimeBackend>> {
-        let backends = self.backends.read().unwrap();
-        backends.get(&instruction_type).map(|factory| factory.create())
+    pub fn get_backend_for_instruction(&self, instruction_type: InstructionType) -> Option<Arc<dyn RuntimeBackend>> {
+        self.backends_by_instruction.get(&instruction_type).cloned()
     }
     
-    /// Get a runtime backend for a specific instruction
-    pub fn get_backend_for_instruction(&self, instruction: &Instruction) -> Option<Box<dyn RuntimeBackend>> {
-        self.get_backend(instruction.instruction_type)
+    /// Get a runtime backend for a specific runtime type
+    pub fn get_backend_for_runtime(&self, runtime_type: RuntimeType) -> Option<Arc<dyn RuntimeBackend>> {
+        self.backends_by_runtime.get(&runtime_type).cloned()
     }
     
-    /// Check if a runtime backend is available for a specific instruction type
-    pub fn has_backend(&self, instruction_type: InstructionType) -> bool {
-        let backends = self.backends.read().unwrap();
-        backends.contains_key(&instruction_type)
-    }
-    
-    /// List all available backend types
-    pub fn available_backends(&self) -> Vec<InstructionType> {
-        let backends = self.backends.read().unwrap();
-        backends.keys().copied().collect()
-    }
-    
-    /// Execute an instruction using the appropriate backend
+    /// Execute an instruction directly using the appropriate backend
     pub fn execute_instruction<'a>(
         &self,
         instruction: &Instruction,
         context: InstructionContext<'a>,
     ) -> Result<HashMap<UnitsObjectId, TokenizedObject>, ExecutionError> {
-        // Get the appropriate backend for this instruction
-        let backend = self.get_backend_for_instruction(instruction)
-            .ok_or_else(|| ExecutionError::NoBackendAvailable(instruction.instruction_type))?;
+        // Get the appropriate backend for this instruction type
+        let backend = self.get_backend_for_instruction(instruction.instruction_type)
+            .ok_or_else(|| ExecutionError::NoBackendAvailableForInstruction(instruction.instruction_type))?;
         
         // Execute the instruction
         match backend.execute(instruction, context) {
             InstructionResult::Success(objects) => Ok(objects),
             InstructionResult::Error(message) => Err(ExecutionError::ExecutionFailed(message)),
         }
+    }
+    
+    /// Execute a program call instruction
+    /// 
+    /// This looks up the program object by ID, extracts its metadata,
+    /// selects the appropriate runtime backend, and executes the program.
+    pub fn execute_program_call<'a>(
+        &self,
+        program_id: &UnitsObjectId,
+        instruction: &Instruction,
+        mut context: InstructionContext<'a>,
+    ) -> Result<HashMap<UnitsObjectId, TokenizedObject>, ExecutionError> {
+        // Find the program object in the context
+        let program = context.objects.get(program_id)
+            .ok_or_else(|| ExecutionError::ProgramNotFound(*program_id))?
+            .clone();
+        
+        // In a real implementation, we'd extract the code metadata from the program object
+        // For now, we'll simulate by hardcoding a runtime type based on the first byte of data
+        let runtime_type = match program.data.first() {
+            Some(1) => RuntimeType::Wasm,
+            Some(2) => RuntimeType::Ebpf,
+            // Default to Wasm for any other value
+            _ => RuntimeType::Wasm,
+        };
+        
+        // Similarly, use a mock entrypoint
+        let entrypoint = "main";
+        
+        // Get the appropriate backend for this program's runtime type
+        let backend = self.get_backend_for_runtime(runtime_type)
+            .ok_or_else(|| ExecutionError::NoBackendAvailableForRuntime(runtime_type))?;
+        
+        // Set the program ID and entrypoint in the context
+        context.program_id = Some(*program_id);
+        context.entrypoint = Some(entrypoint.to_string());
+        
+        // Execute the program
+        match backend.execute_program(&program, entrypoint, &instruction.data, context) {
+            InstructionResult::Success(objects) => Ok(objects),
+            InstructionResult::Error(message) => Err(ExecutionError::ExecutionFailed(message)),
+        }
+    }
+    
+    /// Create a basic backend manager with default backends
+    pub fn with_default_backends() -> Self {
+        let mut manager = Self::new();
+        
+        // Add WebAssembly backend
+        manager.register_backend(Arc::new(WasmRuntimeBackend::new()));
+        
+        // Add eBPF backend
+        manager.register_backend(Arc::new(EbpfRuntimeBackend::new()));
+        
+        manager
     }
 }
 
@@ -151,8 +236,8 @@ impl RuntimeBackend for WasmRuntimeBackend {
         &self.name
     }
     
-    fn can_execute(&self, instruction: &Instruction) -> bool {
-        instruction.instruction_type == InstructionType::Wasm
+    fn runtime_type(&self) -> RuntimeType {
+        RuntimeType::Wasm
     }
     
     fn execute<'a>(
@@ -170,22 +255,38 @@ impl RuntimeBackend for WasmRuntimeBackend {
         // For this example, we'll just return a mock result
         InstructionResult::Error("WebAssembly execution not implemented yet".to_string())
     }
-}
-
-/// Factory for creating WebAssembly runtime backends
-pub struct WasmRuntimeBackendFactory;
-
-impl RuntimeBackendFactory for WasmRuntimeBackendFactory {
-    fn create(&self) -> Box<dyn RuntimeBackend> {
-        Box::new(WasmRuntimeBackend::new())
-    }
     
-    fn backend_name(&self) -> &str {
-        "WebAssembly Runtime"
-    }
-    
-    fn instruction_type(&self) -> InstructionType {
-        InstructionType::Wasm
+    fn execute_program<'a>(
+        &self,
+        program: &TokenizedObject,
+        entrypoint: &str,
+        args: &[u8],
+        _context: InstructionContext<'a>,
+    ) -> InstructionResult {
+        // Get the program code
+        let code = match program.get_code() {
+            Some(code) => code,
+            None => return InstructionResult::Error("Invalid program object".to_string()),
+        };
+        
+        // In a real implementation, we would:
+        // 1. Instantiate a WebAssembly module from the code
+        // 2. Locate the entrypoint function
+        // 3. Serialize the context and args to pass to the function
+        // 4. Execute the function
+        // 5. Deserialize any modified objects
+        
+        // For debugging
+        log::debug!(
+            "Would execute WebAssembly program ({}): {} bytes of code, entrypoint: {}, args: {} bytes",
+            program.id,
+            code.len(),
+            entrypoint,
+            args.len()
+        );
+        
+        // For this example, we'll just return a mock result
+        InstructionResult::Error("WebAssembly program execution not implemented yet".to_string())
     }
 }
 
@@ -208,8 +309,8 @@ impl RuntimeBackend for EbpfRuntimeBackend {
         &self.name
     }
     
-    fn can_execute(&self, instruction: &Instruction) -> bool {
-        instruction.instruction_type == InstructionType::Ebpf
+    fn runtime_type(&self) -> RuntimeType {
+        RuntimeType::Ebpf
     }
     
     fn execute<'a>(
@@ -227,21 +328,37 @@ impl RuntimeBackend for EbpfRuntimeBackend {
         // For this example, we'll just return a mock result
         InstructionResult::Error("eBPF execution not implemented yet".to_string())
     }
+    
+    fn execute_program<'a>(
+        &self,
+        program: &TokenizedObject,
+        entrypoint: &str,
+        args: &[u8],
+        _context: InstructionContext<'a>,
+    ) -> InstructionResult {
+        // Get the program code
+        let code = match program.get_code() {
+            Some(code) => code,
+            None => return InstructionResult::Error("Invalid program object".to_string()),
+        };
+        
+        // In a real implementation, we would:
+        // 1. Load the eBPF bytecode from the code
+        // 2. Set up memory maps for the context and args
+        // 3. Execute the eBPF program with the provided context
+        // 4. Collect modified objects from memory maps
+        
+        // For debugging
+        log::debug!(
+            "Would execute eBPF program ({}): {} bytes of code, entrypoint: {}, args: {} bytes",
+            program.id,
+            code.len(),
+            entrypoint,
+            args.len()
+        );
+        
+        // For this example, we'll just return a mock result
+        InstructionResult::Error("eBPF program execution not implemented yet".to_string())
+    }
 }
 
-/// Factory for creating eBPF runtime backends
-pub struct EbpfRuntimeBackendFactory;
-
-impl RuntimeBackendFactory for EbpfRuntimeBackendFactory {
-    fn create(&self) -> Box<dyn RuntimeBackend> {
-        Box::new(EbpfRuntimeBackend::new())
-    }
-    
-    fn backend_name(&self) -> &str {
-        "eBPF Runtime"
-    }
-    
-    fn instruction_type(&self) -> InstructionType {
-        InstructionType::Ebpf
-    }
-}

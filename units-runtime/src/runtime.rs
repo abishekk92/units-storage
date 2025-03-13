@@ -3,18 +3,38 @@ pub use units_core::id::UnitsObjectId;
 pub use units_core::locks::AccessIntent;
 pub use units_core::objects::TokenizedObject;
 pub use units_core::transaction::{
-    CommitmentLevel, ConflictResult, Instruction, InstructionType, Transaction, TransactionEffect,
+    CommitmentLevel, ConflictResult, Instruction, InstructionType, RuntimeType, Transaction, TransactionEffect,
     TransactionHash, TransactionReceipt,
 };
-use crate::runtime_backend::{RuntimeRegistry, ExecutionError};
+use crate::runtime_backend::{RuntimeBackendManager, ExecutionError, InstructionContext};
 use std::collections::HashMap;
 
 // Moved UnitsReceiptIterator and TransactionReceiptStorage to units-storage-impl::storage_traits
 
+/// Instruction reference types for execution
+#[derive(Debug, Clone)]
+pub enum InstructionReference {
+    /// Direct instruction with instruction data
+    Direct(Instruction),
+    
+    /// Program call to execute a previously deployed program
+    ProgramCall {
+        /// The program object ID to execute
+        program_id: UnitsObjectId,
+        
+        /// Arguments to pass to the program
+        args: Vec<u8>,
+        
+        /// Object access intents for this call
+        object_intents: Vec<(UnitsObjectId, AccessIntent)>,
+    },
+}
+
 /// Runtime for executing transactions that modify TokenizedObjects
 pub trait Runtime {
-    /// Get the runtime registry used by this runtime
-    fn registry(&self) -> &RuntimeRegistry;
+    /// Get the runtime backend manager used by this runtime
+    fn backend_manager(&self) -> &RuntimeBackendManager;
+    
     /// Check for potential conflicts with pending or recent transactions
     ///
     /// This allows detecting conflicts before executing a transaction.
@@ -46,14 +66,57 @@ pub trait Runtime {
     /// A map of object IDs to their updated state after execution
     fn execute_instruction(
         &self,
-        _instruction: &Instruction,
-        _transaction_hash: &TransactionHash,
-        _parameters: HashMap<String, String>,
+        instruction: &Instruction,
+        transaction_hash: &TransactionHash,
+        objects: HashMap<UnitsObjectId, TokenizedObject>,
+        parameters: HashMap<String, String>,
     ) -> Result<HashMap<UnitsObjectId, TokenizedObject>, ExecutionError> {
-        // This is just a placeholder - implementations must override this method
-        Err(ExecutionError::ExecutionFailed(
-            "Default execute_instruction not implemented".to_string()
-        ))
+        let context = InstructionContext {
+            transaction_hash,
+            objects,
+            parameters,
+            program_id: None,
+            entrypoint: None,
+        };
+        
+        self.backend_manager().execute_instruction(instruction, context)
+    }
+    
+    /// Execute a program call instruction that references a previously deployed program
+    ///
+    /// # Parameters
+    /// * `program_id` - The ID of the program object to execute
+    /// * `args` - Arguments to pass to the program
+    /// * `transaction_hash` - The hash of the transaction containing this instruction
+    /// * `objects` - The objects that this instruction has access to
+    /// * `parameters` - Additional runtime parameters for the instruction
+    ///
+    /// # Returns
+    /// A map of object IDs to their updated state after execution
+    fn execute_program_call(
+        &self,
+        program_id: &UnitsObjectId,
+        args: &[u8],
+        transaction_hash: &TransactionHash,
+        objects: HashMap<UnitsObjectId, TokenizedObject>,
+        parameters: HashMap<String, String>,
+    ) -> Result<HashMap<UnitsObjectId, TokenizedObject>, ExecutionError> {
+        // Create an instruction with the program args as data
+        let instruction = Instruction::new(
+            args.to_vec(),
+            InstructionType::Binary, // The actual type doesn't matter here
+            vec![],
+        );
+        
+        let context = InstructionContext {
+            transaction_hash,
+            objects,
+            parameters,
+            program_id: None, // Will be set by execute_program_call
+            entrypoint: None, // Will be set by execute_program_call
+        };
+        
+        self.backend_manager().execute_program_call(program_id, &instruction, context)
     }
     
     /// Execute a transaction and return a transaction receipt with proofs
