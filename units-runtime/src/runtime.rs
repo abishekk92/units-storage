@@ -101,11 +101,12 @@ pub trait Runtime {
         objects: HashMap<UnitsObjectId, TokenizedObject>,
         parameters: HashMap<String, String>,
     ) -> Result<HashMap<UnitsObjectId, TokenizedObject>, ExecutionError> {
-        // Create an instruction with the program args as data
+        // Create an instruction with the program args as parameters
         let instruction = Instruction::new(
             args.to_vec(),
             InstructionType::Binary, // The actual type doesn't matter here
             vec![],
+            *program_id, // Use the program ID as the code object ID
         );
         
         let context = InstructionContext {

@@ -2,6 +2,7 @@ pub mod runtime;
 pub mod verification;
 pub mod mock_runtime;
 pub mod runtime_backend;
+pub mod wasmtime_backend;
 
 // Re-export the main types for convenience
 pub use runtime::{Runtime, TransactionEffect, TransactionReceipt};
@@ -22,6 +23,10 @@ pub use runtime_backend::{
     InstructionContext, InstructionResult, ExecutionError,
     WasmRuntimeBackend, EbpfRuntimeBackend,
 };
+
+// Re-export Wasmtime backend with feature flag
+#[cfg(feature = "wasmtime-backend")]
+pub use wasmtime_backend::{WasmtimeRuntimeBackend, create_wasmtime_backend};
 
 // Re-export MockRuntime and InMemoryReceiptStorage for testing
 pub use mock_runtime::{MockRuntime, InMemoryReceiptStorage};

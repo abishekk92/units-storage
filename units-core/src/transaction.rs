@@ -89,48 +89,54 @@ impl From<InstructionType> for RuntimeType {
 /// A structure representing an instruction within a transaction
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Instruction {
-    /// The binary representation of the instruction
-    pub data: Vec<u8>,
+    /// Parameters for this instruction (arguments, not code)
+    pub params: Vec<u8>,
     
-    /// Type of instruction data, used to select the appropriate runtime backend
+    /// Type of instruction, used to select the appropriate runtime backend
     pub instruction_type: InstructionType,
 
     /// The objects this instruction intends to access and their access intents
     pub object_intents: Vec<(UnitsObjectId, AccessIntent)>,
+    
+    /// The ID of the code object to execute
+    /// All code execution must come from a verified code object for security
+    pub code_object_id: UnitsObjectId,
 }
 
 impl Instruction {
     /// Create a new instruction with the specified type
     pub fn new(
-        data: Vec<u8>, 
+        params: Vec<u8>, 
         instruction_type: InstructionType,
         object_intents: Vec<(UnitsObjectId, AccessIntent)>,
+        code_object_id: UnitsObjectId,
     ) -> Self {
         Self {
-            data,
+            params,
             instruction_type,
             object_intents,
+            code_object_id,
         }
     }
     
-    /// Create a new binary instruction (native execution)
-    pub fn binary(data: Vec<u8>, object_intents: Vec<(UnitsObjectId, AccessIntent)>) -> Self {
-        Self::new(data, InstructionType::Binary, object_intents)
+    /// Create a new binary instruction
+    pub fn binary(params: Vec<u8>, object_intents: Vec<(UnitsObjectId, AccessIntent)>, code_object_id: UnitsObjectId) -> Self {
+        Self::new(params, InstructionType::Binary, object_intents, code_object_id)
     }
     
     /// Create a new WebAssembly instruction
-    pub fn wasm(data: Vec<u8>, object_intents: Vec<(UnitsObjectId, AccessIntent)>) -> Self {
-        Self::new(data, InstructionType::Wasm, object_intents)
+    pub fn wasm(params: Vec<u8>, object_intents: Vec<(UnitsObjectId, AccessIntent)>, code_object_id: UnitsObjectId) -> Self {
+        Self::new(params, InstructionType::Wasm, object_intents, code_object_id)
     }
     
     /// Create a new eBPF instruction
-    pub fn ebpf(data: Vec<u8>, object_intents: Vec<(UnitsObjectId, AccessIntent)>) -> Self {
-        Self::new(data, InstructionType::Ebpf, object_intents)
+    pub fn ebpf(params: Vec<u8>, object_intents: Vec<(UnitsObjectId, AccessIntent)>, code_object_id: UnitsObjectId) -> Self {
+        Self::new(params, InstructionType::Ebpf, object_intents, code_object_id)
     }
     
     /// Create a new JSON instruction
-    pub fn json(json: String, object_intents: Vec<(UnitsObjectId, AccessIntent)>) -> Self {
-        Self::new(json.into_bytes(), InstructionType::Json, object_intents)
+    pub fn json(json: String, object_intents: Vec<(UnitsObjectId, AccessIntent)>, code_object_id: UnitsObjectId) -> Self {
+        Self::new(json.into_bytes(), InstructionType::Json, object_intents, code_object_id)
     }
     
     /// Acquire all locks needed for this instruction

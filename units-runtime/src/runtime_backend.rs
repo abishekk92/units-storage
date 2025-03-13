@@ -176,17 +176,15 @@ impl RuntimeBackendManager {
             .ok_or_else(|| ExecutionError::ProgramNotFound(*program_id))?
             .clone();
         
-        // In a real implementation, we'd extract the code metadata from the program object
-        // For now, we'll simulate by hardcoding a runtime type based on the first byte of data
-        let runtime_type = match program.data.first() {
-            Some(1) => RuntimeType::Wasm,
-            Some(2) => RuntimeType::Ebpf,
-            // Default to Wasm for any other value
-            _ => RuntimeType::Wasm,
-        };
+        // Extract the code metadata from the program object
+        let metadata = program.get_code_metadata()
+            .ok_or_else(|| ExecutionError::InvalidProgram(*program_id))?;
         
-        // Similarly, use a mock entrypoint
-        let entrypoint = "main";
+        // Get the runtime type from the metadata
+        let runtime_type = metadata.runtime_type;
+        
+        // Get the entrypoint from the metadata
+        let entrypoint = metadata.entrypoint.as_str();
         
         // Get the appropriate backend for this program's runtime type
         let backend = self.get_backend_for_runtime(runtime_type)
@@ -196,8 +194,8 @@ impl RuntimeBackendManager {
         context.program_id = Some(*program_id);
         context.entrypoint = Some(entrypoint.to_string());
         
-        // Execute the program
-        match backend.execute_program(&program, entrypoint, &instruction.data, context) {
+        // Execute the program using the instruction parameters
+        match backend.execute_program(&program, entrypoint, &instruction.params, context) {
             InstructionResult::Success(objects) => Ok(objects),
             InstructionResult::Error(message) => Err(ExecutionError::ExecutionFailed(message)),
         }
@@ -207,11 +205,19 @@ impl RuntimeBackendManager {
     pub fn with_default_backends() -> Self {
         let mut manager = Self::new();
         
-        // Add WebAssembly backend
+        // Add default WebAssembly backend implementation (mock)
         manager.register_backend(Arc::new(WasmRuntimeBackend::new()));
         
         // Add eBPF backend
         manager.register_backend(Arc::new(EbpfRuntimeBackend::new()));
+        
+        // When the wasmtime-backend feature is enabled, register the Wasmtime backend
+        #[cfg(feature = "wasmtime-backend")]
+        {
+            use crate::wasmtime_backend::create_wasmtime_backend;
+            // Replace the mock Wasm backend with the real Wasmtime implementation
+            manager.register_backend(create_wasmtime_backend());
+        }
         
         manager
     }
@@ -242,15 +248,38 @@ impl RuntimeBackend for WasmRuntimeBackend {
     
     fn execute<'a>(
         &self,
-        _instruction: &Instruction,
-        _context: InstructionContext<'a>,
+        instruction: &Instruction,
+        context: InstructionContext<'a>,
     ) -> InstructionResult {
+        // Find the code object
+        let code_object = match context.objects.get(&instruction.code_object_id) {
+            Some(obj) => obj,
+            None => return InstructionResult::Error(
+                format!("Code object not found: {}", instruction.code_object_id)
+            ),
+        };
+        
+        // Get code metadata
+        let metadata = match code_object.get_code_metadata() {
+            Some(metadata) => metadata,
+            None => return InstructionResult::Error(
+                format!("Invalid code object: {}", instruction.code_object_id)
+            ),
+        };
+        
         // In a real implementation, we would:
         // 1. Set up a WebAssembly runtime environment (wasmtime, wasmer, etc.)
-        // 2. Load the WebAssembly module from instruction.data
+        // 2. Load the WebAssembly module from the code object's data
         // 3. Serialize the context.objects to pass to the WebAssembly module
-        // 4. Execute the module, providing access to the serialized objects
+        // 4. Execute the module with the instruction parameters
         // 5. Deserialize any objects modified by the module
+        
+        log::debug!(
+            "Would execute WebAssembly code object ({}): entrypoint: {}, params: {} bytes",
+            instruction.code_object_id,
+            metadata.entrypoint,
+            instruction.params.len()
+        );
         
         // For this example, we'll just return a mock result
         InstructionResult::Error("WebAssembly execution not implemented yet".to_string())
