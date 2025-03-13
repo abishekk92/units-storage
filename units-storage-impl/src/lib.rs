@@ -10,11 +10,12 @@ pub mod sqlite;
 // Re-export the main types for convenience
 pub use storage_traits::{
     UnitsProofIterator, UnitsStateProofIterator,
-    UnitsStorage, UnitsStorageIterator, UnitsStorageProofEngine, UnitsWriteAheadLog, WALEntry,
+    UnitsStorage, UnitsStorageIterator, UnitsStorageProofEngine,
+    UnitsWriteAheadLog, WALEntry,
 };
 
-// Re-export types from units-runtime
-pub use units_runtime::{TransactionReceiptStorage, UnitsReceiptIterator};
+// Re-export receipt types from units-runtime
+pub use units_runtime::runtime::{UnitsReceiptIterator, TransactionReceiptStorage};
 
 pub use wal::FileWriteAheadLog;
 
