@@ -4,13 +4,7 @@ pub mod lattice_proof_engine;
 pub mod merkle_proof;
 
 // Re-export the main types for convenience
-pub use engine::{
-    ProofEngine, 
-    StateProof, 
-    TokenizedObjectProof, 
-    SlotNumber,
-    VerificationResult
-};
+pub use engine::{ProofEngine, SlotNumber, StateProof, TokenizedObjectProof, VerificationResult};
 
 // Helper functions
 pub mod proofs {
@@ -24,7 +18,7 @@ pub mod proofs {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        
+
         now
     }
 }

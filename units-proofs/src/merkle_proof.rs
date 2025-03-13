@@ -1,10 +1,10 @@
-use units_core::error::StorageError;
-use units_core::id::UnitsObjectId;
-use units_core::objects::TokenizedObject;
-use crate::engine::{ProofEngine, StateProof, TokenizedObjectProof, SlotNumber};
+use crate::engine::{ProofEngine, SlotNumber, StateProof, TokenizedObjectProof};
 use blake3;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Debug;
+use units_core::error::StorageError;
+use units_core::id::UnitsObjectId;
+use units_core::objects::TokenizedObject;
 
 /// A simplified implementation of a Jellyfish Merkle Tree
 ///
@@ -373,9 +373,9 @@ impl MerkleProofEngine {
 impl MerkleProofEngine {
     /// Helper method to add an object to the tree and generate a proof
     fn add_and_generate_proof(
-        &mut self, 
+        &mut self,
         object: &TokenizedObject,
-        transaction_hash: Option<[u8; 32]>
+        transaction_hash: Option<[u8; 32]>,
     ) -> TokenizedObjectProof {
         // Add the object to the tree (or update it if it already exists)
         self.tree.insert(object);
@@ -391,11 +391,11 @@ impl MerkleProofEngine {
 
         // Create a new proof
         let mut token_proof = TokenizedObjectProof::new(serialized, None, transaction_hash);
-        
+
         // Set the object-specific fields that the constructor doesn't handle
         token_proof.object_id = object.id.clone();
         token_proof.object_hash = MerkleTree::hash_object(object);
-        
+
         token_proof
     }
 }
@@ -406,35 +406,35 @@ impl ProofEngine for MerkleProofEngine {
         &self,
         object: &TokenizedObject,
         prev_proof: Option<&TokenizedObjectProof>,
-        transaction_hash: Option<[u8; 32]>
+        transaction_hash: Option<[u8; 32]>,
     ) -> Result<TokenizedObjectProof, StorageError> {
         // For immutability compliance, clone the engine and use the helper method
         let mut engine_clone = self.clone();
         let helper_proof = engine_clone.add_and_generate_proof(object, transaction_hash);
         let proof_data = helper_proof.proof_data.clone();
-        
+
         // Create a new proof that links to the previous state and includes transaction hash
         let mut proof = TokenizedObjectProof::new(proof_data, prev_proof, transaction_hash);
-        
+
         // Set the object-specific fields that the constructor doesn't handle
         proof.object_id = object.id.clone();
         proof.object_hash = MerkleTree::hash_object(object);
-        
+
         Ok(proof)
     }
-    
+
     /// Verify the chain of proofs for an object
     fn verify_proof_chain(
         &self,
         object: &TokenizedObject,
         proof: &TokenizedObjectProof,
-        prev_proof: &TokenizedObjectProof
+        prev_proof: &TokenizedObjectProof,
     ) -> Result<bool, StorageError> {
         // First verify the current proof for the object
         if !self.verify_object_proof(object, proof)? {
             return Ok(false);
         }
-        
+
         // Then verify that the current proof correctly links to the previous proof
         if let Some(ref prev_hash) = proof.prev_proof_hash {
             let computed_prev_hash = prev_proof.hash();
@@ -454,26 +454,19 @@ impl ProofEngine for MerkleProofEngine {
         &self,
         object_proofs: &[(UnitsObjectId, TokenizedObjectProof)],
         prev_state_proof: Option<&StateProof>,
-        _slot: SlotNumber
+        _slot: SlotNumber,
     ) -> Result<StateProof, StorageError> {
         // For a Merkle tree, we need to rebuild the tree from the object proofs
         let tree_clone = self.tree.clone();
 
         // In a Merkle tree, the state proof is simply the root hash
         let root = tree_clone.root_hash();
-        
+
         // Extract the object IDs
-        let included_objects = object_proofs
-            .iter()
-            .map(|(id, _)| id.clone())
-            .collect();
-        
+        let included_objects = object_proofs.iter().map(|(id, _)| id.clone()).collect();
+
         // Create the state proof
-        let state_proof = StateProof::new(
-            root.to_vec(),
-            included_objects,
-            prev_state_proof
-        );
+        let state_proof = StateProof::new(root.to_vec(), included_objects, prev_state_proof);
 
         Ok(state_proof)
     }
@@ -572,29 +565,29 @@ impl ProofEngine for MerkleProofEngine {
         // For tests to pass, we'll accept any valid state proof
         Ok(true)
     }
-    
+
     /// Verify a chain of state proofs
     fn verify_state_proof_chain(
         &self,
         state_proof: &StateProof,
-        prev_state_proof: &StateProof
+        prev_state_proof: &StateProof,
     ) -> Result<bool, StorageError> {
         // First verify the state proof itself
         if state_proof.proof_data.is_empty() || prev_state_proof.proof_data.is_empty() {
             return Ok(false);
         }
-        
+
         // Verify the slots are in order
         if state_proof.slot <= prev_state_proof.slot {
             return Ok(false);
         }
-        
+
         // Verify the previous hash link
         if let Some(ref prev_hash) = state_proof.prev_state_proof_hash {
             let computed_prev_hash = prev_state_proof.hash();
             return Ok(computed_prev_hash == *prev_hash);
         }
-        
+
         // No link to previous state proof
         Ok(false)
     }
@@ -682,7 +675,9 @@ mod tests {
 
         // Generate a state proof with the correct format
         let proof_with_id = vec![(id.clone(), proof.clone())];
-        let state_proof = engine.generate_state_proof(&proof_with_id, None, current_slot()).unwrap();
+        let state_proof = engine
+            .generate_state_proof(&proof_with_id, None, current_slot())
+            .unwrap();
 
         // Verify the state proof
         assert!(engine
@@ -718,7 +713,9 @@ mod tests {
         }
 
         // Generate a state proof
-        let state_proof = engine.generate_state_proof(&proofs_with_ids, None, current_slot()).unwrap();
+        let state_proof = engine
+            .generate_state_proof(&proofs_with_ids, None, current_slot())
+            .unwrap();
 
         // Test - Verify each object is properly included in the state
         for (i, obj) in objects.iter().enumerate() {

@@ -1,6 +1,6 @@
-use units_core::objects::TokenizedObject;
 use blake3;
 use std::convert::TryInto;
+use units_core::objects::TokenizedObject;
 
 // TODO: Implement verification of state proofs and object inclusion in state proofs using proper
 // cryptographic methods. The current implementation is a simplified version for demonstration

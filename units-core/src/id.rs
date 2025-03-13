@@ -38,17 +38,17 @@ impl UnitsObjectId {
     pub fn new(uid: [u8; 32]) -> Self {
         UnitsObjectId(uid)
     }
-    
+
     /// Create a UnitsObjectId from raw bytes
     pub fn from_bytes(bytes: [u8; 32]) -> Self {
         UnitsObjectId(bytes)
     }
-    
+
     /// Get a reference to the internal bytes
     pub fn bytes(&self) -> &[u8] {
         &self.0
     }
-    
+
     /// Create a random UnitsObjectId for testing
     pub fn random() -> Self {
         // Generate a random ID using system time
@@ -57,12 +57,12 @@ impl UnitsObjectId {
             .unwrap_or_default()
             .as_nanos()
             .to_le_bytes();
-        
+
         // Use this as a seed to create a unique ID
         let (id, _) = Self::find_uid(&[&now, &[1, 2, 3, 4]]);
         id
     }
-    
+
     /// Generate a unique UnitsObjectId for testing purposes - exposed for testing in other crates
     pub fn unique_id_for_tests() -> Self {
         // Use current timestamp as basis for uniqueness
@@ -78,7 +78,7 @@ impl UnitsObjectId {
         let (id, _) = UnitsObjectId::find_uid(&[ts_slice, &extra]);
         id
     }
-    
+
     pub fn create_object_id(seeds: &[&[u8]], bump: u8) -> [u8; 32] {
         let mut hasher = Sha256::new();
 
