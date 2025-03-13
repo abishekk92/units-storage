@@ -4,7 +4,10 @@ pub mod verification;
 // Re-export the main types for convenience
 pub use runtime::{
     TransactionResult,
-    RuntimeTransactionReceipt,
+    TransactionReceipt,
+    TransactionEffect,
+    UnitsReceiptIterator,
+    TransactionReceiptStorage,
     Runtime,
     MockRuntime,
     InMemoryReceiptStorage,

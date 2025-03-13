@@ -31,6 +31,16 @@ The project is organized as a Cargo workspace with the following crates:
   - Object Runtime
   - Proof Verification
   - Transaction Processing
+  - Transaction Commitment Levels
+
+- **units-transaction**: Transaction definitions and processing
+  - Transaction Structure
+  - Instruction Processing
+  - Commitment Levels
+
+- **units-scheduler**: Transaction scheduling and conflict resolution
+  - Conflict Detection
+  - Transaction Coordination
 
 - **units**: Convenience wrapper crate that re-exports all components
 
@@ -41,6 +51,7 @@ The project is organized as a Cargo workspace with the following crates:
 - **Verifiable History**: Cryptographic proof chains that link object states over time
 - **Write-Ahead Log**: Durable logging of all state changes for reliability
 - **Slot-Based Versioning**: Historical tracking of objects and their proofs
+- **Transaction Commitment Levels**: Support for processing, committed, and failed transaction states
 - **Multiple Backends**: 
   - SQLite implementation (default)
   - RocksDB implementation (optional)
@@ -151,6 +162,42 @@ if let Some(retrieved) = storage.get(&id).unwrap() {
 // Delete the object and get the deletion proof
 let deletion_proof = storage.delete(&id).unwrap();
 println!("Deletion proof: {:?}", deletion_proof);
+```
+
+### Transaction Processing with Commitment Levels
+
+```rust
+use units::{Transaction, Instruction, CommitmentLevel, AccessIntent};
+use units::runtime::Runtime;
+
+// Create instructions for a transaction
+let instruction = Instruction {
+    data: vec![/* instruction data */],
+    object_intents: vec![(object_id, AccessIntent::Write)]
+};
+
+// Create a transaction (starts with Processing commitment level)
+let mut transaction = Transaction::new(vec![instruction], transaction_hash);
+
+// Execute the transaction
+let result = runtime.execute_transaction(&transaction).unwrap();
+
+if result.success {
+    // Mark the transaction as committed when ready
+    transaction.commit();
+    
+    // Or if there's an issue, mark it as failed
+    // transaction.fail();
+    
+    // Check if a transaction can be rolled back
+    if transaction.can_rollback() {
+        // Roll back operations if needed
+    }
+}
+
+// Transaction receipts also capture commitment levels
+let receipt = runtime.get_transaction_receipt(&transaction.hash).unwrap();
+println!("Transaction commitment level: {:?}", receipt.commitment_level);
 ```
 
 ### Scanning Objects

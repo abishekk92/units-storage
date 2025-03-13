@@ -3,103 +3,10 @@ use units_core::error::StorageError;
 use units_core::id::UnitsObjectId;
 use units_core::objects::TokenizedObject;
 use units_proofs::{ProofEngine, SlotNumber, StateProof, TokenizedObjectProof};
-
+use units_runtime::{TransactionReceipt, TransactionEffect};
 use units_transaction::CommitmentLevel;
 
-/// Represents the before and after state of an object in a transaction
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TransactionEffect {
-    /// The transaction that caused this effect
-    pub transaction_hash: [u8; 32],
-
-    /// The ID of the object affected
-    pub object_id: UnitsObjectId,
-
-    /// The state of the object before the transaction (None if object was created)
-    pub before_image: Option<TokenizedObject>,
-
-    /// The state of the object after the transaction (None if object was deleted)
-    pub after_image: Option<TokenizedObject>,
-}
-
-/// A temporary TransactionReceipt implementation until the units-runtime crate is fully functional
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TransactionReceipt {
-    pub transaction_hash: [u8; 32],
-    pub slot: SlotNumber,
-    pub success: bool,
-    pub timestamp: u64,
-    pub commitment_level: CommitmentLevel,
-    /// Proofs are only generated and stored when a transaction is committed
-    pub proofs: HashMap<UnitsObjectId, TokenizedObjectProof>,
-    /// Effects track the before and after state of objects for easier rollback
-    pub effects: Vec<TransactionEffect>,
-}
-
-impl TransactionReceipt {
-    pub fn new(
-        transaction_hash: [u8; 32],
-        slot: SlotNumber,
-        success: bool,
-        timestamp: u64,
-    ) -> Self {
-        Self {
-            transaction_hash,
-            slot,
-            success,
-            timestamp,
-            commitment_level: if success {
-                CommitmentLevel::Committed
-            } else {
-                CommitmentLevel::Failed
-            },
-            proofs: HashMap::new(),
-            effects: Vec::new(),
-        }
-    }
-
-    pub fn with_commitment_level(
-        transaction_hash: [u8; 32],
-        slot: SlotNumber,
-        success: bool,
-        timestamp: u64,
-        commitment_level: CommitmentLevel,
-    ) -> Self {
-        Self {
-            transaction_hash,
-            slot,
-            success,
-            timestamp,
-            commitment_level,
-            proofs: HashMap::new(),
-            effects: Vec::new(),
-        }
-    }
-
-    pub fn add_proof(&mut self, id: UnitsObjectId, proof: TokenizedObjectProof) {
-        self.proofs.insert(id, proof);
-    }
-
-    pub fn add_effect(&mut self, effect: TransactionEffect) {
-        self.effects.push(effect);
-    }
-
-    /// Check if the transaction can be rolled back
-    pub fn can_rollback(&self) -> bool {
-        self.commitment_level == CommitmentLevel::Processing
-    }
-
-    /// Mark the transaction as committed
-    pub fn commit(&mut self) {
-        self.commitment_level = CommitmentLevel::Committed;
-    }
-
-    /// Mark the transaction as failed
-    pub fn fail(&mut self) {
-        self.success = false;
-        self.commitment_level = CommitmentLevel::Failed;
-    }
-}
+// Implementation of TransactionReceipt moved to units-runtime
 use std::collections::HashMap;
 use std::iter::Iterator;
 use std::path::Path;
@@ -116,47 +23,7 @@ pub trait UnitsProofIterator:
 /// Iterator for traversing state proofs in storage
 pub trait UnitsStateProofIterator: Iterator<Item = Result<StateProof, StorageError>> {}
 
-/// Iterator for traversing transaction receipts in storage
-pub trait UnitsReceiptIterator: Iterator<Item = Result<TransactionReceipt, StorageError>> {}
-
-/// Storage interface for transaction receipts
-pub trait TransactionReceiptStorage {
-    /// Store a transaction receipt
-    ///
-    /// # Parameters
-    /// * `receipt` - The transaction receipt to store
-    ///
-    /// # Returns
-    /// Ok(()) if successful, Err otherwise
-    fn store_receipt(&self, receipt: &TransactionReceipt) -> Result<(), StorageError>;
-
-    /// Get a transaction receipt by transaction hash
-    ///
-    /// # Parameters
-    /// * `hash` - The transaction hash to get the receipt for
-    ///
-    /// # Returns
-    /// Some(receipt) if found, None otherwise
-    fn get_receipt(&self, hash: &[u8; 32]) -> Result<Option<TransactionReceipt>, StorageError>;
-
-    /// Get all transaction receipts for a specific object
-    ///
-    /// # Parameters
-    /// * `id` - The ID of the object to get receipts for
-    ///
-    /// # Returns
-    /// An iterator that yields all receipts that affected this object
-    fn get_receipts_for_object(&self, id: &UnitsObjectId) -> Box<dyn UnitsReceiptIterator + '_>;
-
-    /// Get all transaction receipts in a specific slot
-    ///
-    /// # Parameters
-    /// * `slot` - The slot to get receipts for
-    ///
-    /// # Returns
-    /// An iterator that yields all receipts in this slot
-    fn get_receipts_in_slot(&self, slot: SlotNumber) -> Box<dyn UnitsReceiptIterator + '_>;
-}
+// Moved to units-runtime::runtime
 /// A write-ahead log entry for an object update
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WALEntry {

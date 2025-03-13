@@ -15,7 +15,7 @@ use units_proofs::{
     VerificationResult
 };
 
-use units_storage_impl::storage_traits::TransactionReceipt;
+use crate::runtime::TransactionReceipt;
 
 /// Verifier for transaction receipts and proofs that adapts the proof engine
 /// for receipt verification.
@@ -83,7 +83,7 @@ impl<'a> ProofVerifier<'a> {
         objects: &HashMap<UnitsObjectId, TokenizedObject>,
     ) -> VerificationResult {
         // Verify each object proof in the receipt
-        for (id, proof) in &receipt.proofs {
+        for (id, proof) in &receipt.object_proofs {
             if let Some(object) = objects.get(id) {
                 match self.verify_object_proof(object, proof) {
                     VerificationResult::Valid => {},
@@ -182,7 +182,7 @@ pub fn detect_double_spend(
     sorted_receipts.sort_by_key(|r| r.slot);
     
     for receipt in sorted_receipts {
-        if let Some(_proof) = receipt.proofs.get(object_id) {
+        if let Some(_proof) = receipt.object_proofs.get(object_id) {
             let transaction_hash = receipt.transaction_hash;
             let slot = receipt.slot;
             
