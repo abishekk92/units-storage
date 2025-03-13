@@ -4,6 +4,8 @@ members = [
     "units-core",
     "units-proofs",
     "units-storage-impl",
+    "units-transaction",
+    "units-scheduler",
     "units-runtime",
     "units",
 ]
@@ -34,4 +36,6 @@ tempfile = "3.8"
 units-core = { path = "./units-core" }
 units-proofs = { path = "./units-proofs" }
 units-storage-impl = { path = "./units-storage-impl" }
+units-transaction = { path = "./units-transaction" }
+units-scheduler = { path = "./units-scheduler" }
 units-runtime = { path = "./units-runtime" }

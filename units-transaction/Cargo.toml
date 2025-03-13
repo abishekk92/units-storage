@@ -1,0 +1,13 @@
+[package]
+name = "units-transaction"
+version.workspace = true
+edition.workspace = true
+description = "Transaction types for Universal Information Tokenization System (UNITS)"
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords = ["units", "tokenization", "transaction"]
+
+[dependencies]
+units-core.workspace = true
+serde.workspace = true

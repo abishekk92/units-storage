@@ -8,48 +8,14 @@ use units_storage_impl::storage_traits::{
     TransactionReceiptStorage, UnitsReceiptIterator, TransactionReceipt
 };
 
-/// A transaction hash uniquely identifies a transaction in the system
-pub type TransactionHash = [u8; 32];
-
-/// The result of a transaction conflict check
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ConflictResult {
-    /// No conflicts detected, transaction can proceed
-    NoConflict,
-    /// Conflicts detected with these transaction hashes
-    Conflict(Vec<TransactionHash>),
-    /// Read-only transaction, no conflict possible
-    ReadOnly,
-}
-
-/// The access intent for an instruction on a TokenizedObject
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AccessIntent {
-    /// Read-only access to the object
-    Read,
-    /// Read-write access to the object
-    Write,
-}
-
-/// A structure representing an instruction within a transaction
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Instruction {
-    /// The binary representation of the instruction
-    pub data: Vec<u8>,
-    
-    /// The objects this instruction intends to access and their access intents
-    pub object_intents: Vec<(UnitsObjectId, AccessIntent)>,
-}
-
-/// Transaction that contains multiple instructions to be executed
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Transaction {
-    /// List of instructions to be executed as part of this transaction
-    pub instructions: Vec<Instruction>,
-    
-    /// The hash of the transaction
-    pub hash: TransactionHash,
-}
+// Import types from units-transaction
+pub use units_transaction::{
+    TransactionHash,
+    AccessIntent,
+    Instruction,
+    Transaction,
+    ConflictResult
+};
 
 /// Result of a transaction execution
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -163,22 +129,16 @@ pub trait Runtime {
     /// Check for potential conflicts with pending or recent transactions
     ///
     /// This allows detecting conflicts before executing a transaction.
-    /// Implementations can use various strategies to detect conflicts.
+    /// Implementations should use a conflict checker from the units-scheduler crate.
     ///
     /// # Parameters
     /// * `transaction` - The transaction to check for conflicts
     ///
     /// # Returns
     /// A ConflictResult indicating whether conflicts were detected
-    fn check_conflicts(&self, transaction: &Transaction) -> Result<ConflictResult, String> {
-        // Default implementation checks if transaction is read-only
-        if transaction.instructions.iter().all(|i| {
-            i.object_intents.iter().all(|(_, intent)| *intent == AccessIntent::Read)
-        }) {
-            return Ok(ConflictResult::ReadOnly);
-        }
-        
-        // By default, assume no conflicts if all objects are being read
+    fn check_conflicts(&self, _transaction: &Transaction) -> Result<ConflictResult, String> {
+        // Default implementation assumes no conflicts
+        // Real implementations should use a ConflictChecker from units-scheduler
         Ok(ConflictResult::NoConflict)
     }
     
@@ -283,55 +243,15 @@ impl MockRuntime {
 
 impl Runtime for MockRuntime {
     fn check_conflicts(&self, transaction: &Transaction) -> Result<ConflictResult, String> {
-        // For the mock, we'll implement a simple conflict detection mechanism
-        // that checks if any objects with write intents have been modified in recent transactions
+        use units_scheduler::{BasicConflictChecker, ConflictChecker};
         
-        // Extract object IDs with write intent from this transaction
-        let mut write_objects = HashSet::new();
-        for instruction in &transaction.instructions {
-            for (obj_id, intent) in &instruction.object_intents {
-                if *intent == AccessIntent::Write {
-                    write_objects.insert(*obj_id);
-                }
-            }
-        }
-        
-        // If it's a read-only transaction, no conflicts are possible
-        if write_objects.is_empty() {
-            return Ok(ConflictResult::ReadOnly);
-        }
-        
-        // Check for conflicts with recent transactions
-        let mut conflicts = Vec::new();
-        
-        // Check the last 10 transactions (arbitrary number for testing)
+        // Get recent transactions for testing (last 10)
         let recent_transactions: Vec<_> = self.transactions.values().cloned().collect();
+        let recent_transactions = recent_transactions.iter().rev().take(10).cloned().collect::<Vec<_>>();
         
-        for other_tx in recent_transactions.iter().rev().take(10) {
-            // Skip checking against itself
-            if other_tx.hash == transaction.hash {
-                continue;
-            }
-            
-            // Check for overlapping write intents
-            for instruction in &other_tx.instructions {
-                for (obj_id, intent) in &instruction.object_intents {
-                    if *intent == AccessIntent::Write && write_objects.contains(obj_id) {
-                        conflicts.push(other_tx.hash);
-                        break;
-                    }
-                }
-                if conflicts.contains(&other_tx.hash) {
-                    break;
-                }
-            }
-        }
-        
-        if conflicts.is_empty() {
-            Ok(ConflictResult::NoConflict)
-        } else {
-            Ok(ConflictResult::Conflict(conflicts))
-        }
+        // Use the BasicConflictChecker from units-scheduler
+        let checker = BasicConflictChecker::new();
+        checker.check_conflicts(transaction, &recent_transactions)
     }
     
     fn execute_transaction(&self, transaction: Transaction) -> RuntimeTransactionReceipt {

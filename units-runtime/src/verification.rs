@@ -1,38 +1,24 @@
 //! Receipt and proof verification utilities
 //! 
-//! This module provides standalone verification functions for receipts and proofs
-//! that don't require access to the storage layer.
+//! This module provides adapter functions for verifying transaction receipts against
+//! the underlying proof engine.
 
-// use units_core::error::StorageError; // Not needed
 use units_core::id::UnitsObjectId;
 use units_core::objects::TokenizedObject;
-use units_proofs::{ProofEngine, SlotNumber, StateProof, TokenizedObjectProof};
-// Remove unused import
-use units_storage_impl::storage_traits::TransactionReceipt;
 use std::collections::HashMap;
 
-/// Result of a verification operation
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum VerificationResult {
-    /// Verification was successful
-    Valid,
-    /// Verification failed with a specific reason
-    Invalid(String),
-    /// Verification couldn't be completed due to missing data
-    MissingData(String),
-}
+use units_proofs::{
+    ProofEngine, 
+    SlotNumber, 
+    StateProof, 
+    TokenizedObjectProof, 
+    VerificationResult
+};
 
-impl From<VerificationResult> for Result<(), String> {
-    fn from(result: VerificationResult) -> Self {
-        match result {
-            VerificationResult::Valid => Ok(()),
-            VerificationResult::Invalid(msg) => Err(msg),
-            VerificationResult::MissingData(msg) => Err(format!("Missing data: {}", msg)),
-        }
-    }
-}
+use units_storage_impl::storage_traits::TransactionReceipt;
 
-/// Verifier for transaction receipts and proofs
+/// Verifier for transaction receipts and proofs that adapts the proof engine
+/// for receipt verification.
 pub struct ProofVerifier<'a> {
     /// The proof engine to use for verification
     engine: &'a dyn ProofEngine,
@@ -66,16 +52,11 @@ impl<'a> ProofVerifier<'a> {
     
     /// Verify a proof chain for an object
     ///
-    /// Verifies that a sequence of proofs forms a valid chain, with each proof correctly
-    /// linking to its predecessor through cryptographic hashes.
+    /// Delegates to the underlying proof engine's verify_proof_history method.
     ///
     /// # Parameters
     /// * `object_states` - Vector of (slot, object state) pairs in ascending slot order
     /// * `proofs` - Vector of (slot, object proof) pairs in ascending slot order
-    ///
-    /// # Performance
-    /// This method is optimized for sequentially increasing slot numbers, using vectors
-    /// instead of hash maps for better performance.
     ///
     /// # Returns
     /// A VerificationResult indicating whether the proof chain is valid
@@ -84,48 +65,8 @@ impl<'a> ProofVerifier<'a> {
         object_states: &[(SlotNumber, TokenizedObject)],
         proofs: &[(SlotNumber, TokenizedObjectProof)],
     ) -> VerificationResult {
-        if object_states.is_empty() || proofs.is_empty() {
-            return VerificationResult::MissingData("No object states or proofs provided".to_string());
-        }
-        
-        // Verify each state has a corresponding proof
-        for (slot, obj) in object_states {
-            // Find matching proof for this slot
-            let matching_proof = proofs.iter().find(|(proof_slot, _)| proof_slot == slot);
-            
-            if let Some((_, proof)) = matching_proof {
-                match self.verify_object_proof(obj, proof) {
-                    VerificationResult::Valid => {},
-                    result => return result,
-                }
-            } else {
-                return VerificationResult::MissingData(
-                    format!("Missing proof for slot {}", slot)
-                );
-            }
-        }
-        
-        // Verify proof chain links - since proofs are ordered by slot, we can just iterate sequentially
-        for i in 1..proofs.len() {
-            let (current_slot, current_proof) = &proofs[i];
-            let (prev_slot, prev_proof) = &proofs[i - 1];
-            
-            // Verify the current proof references the previous proof correctly
-            if let Some(prev_hash) = &current_proof.prev_proof_hash {
-                let computed_hash = prev_proof.hash();
-                if computed_hash != *prev_hash {
-                    return VerificationResult::Invalid(
-                        format!("Proof chain broken between slots {} and {}", prev_slot, current_slot)
-                    );
-                }
-            } else {
-                return VerificationResult::Invalid(
-                    format!("Proof at slot {} does not reference previous proof", current_slot)
-                );
-            }
-        }
-        
-        VerificationResult::Valid
+        // Delegate to the proof engine's implementation
+        self.engine.verify_proof_history(object_states, proofs)
     }
     
     /// Verify a transaction receipt
@@ -182,24 +123,22 @@ impl<'a> ProofVerifier<'a> {
         state_proof: &StateProof,
         object_proofs: &HashMap<UnitsObjectId, TokenizedObjectProof>,
     ) -> VerificationResult {
-        // Verify each object in the state proof has a valid proof
-        for id in &state_proof.object_ids {
-            if !object_proofs.contains_key(id) {
-                return VerificationResult::MissingData(
-                    format!("Missing proof for object {:?} in state proof", id)
-                );
-            }
+        // Convert HashMap to the format expected by the proof engine
+        let object_proof_pairs: Vec<(UnitsObjectId, TokenizedObjectProof)> = 
+            object_proofs.iter()
+                .map(|(id, proof)| (*id, proof.clone()))
+                .collect();
+        
+        // Delegate to the proof engine for state proof verification
+        match self.engine.verify_state_proof(state_proof, &object_proof_pairs) {
+            Ok(true) => VerificationResult::Valid,
+            Ok(false) => VerificationResult::Invalid("State proof verification failed".to_string()),
+            Err(e) => VerificationResult::Invalid(format!("Verification error: {}", e)),
         }
-        
-        // Verify the state proof hash
-        // This would typically verify the Merkle root or other aggregation mechanism
-        // Since we don't have the actual verification code here, we just return Valid
-        
-        VerificationResult::Valid
     }
 }
 
-/// Simplistic proof of inclusion verification
+/// Verify if a transaction is included in a collection of receipts
 ///
 /// # Parameters
 /// * `transaction_hash` - Hash of transaction to verify
@@ -220,11 +159,14 @@ pub fn verify_transaction_included(
     VerificationResult::Invalid(format!("Transaction {:?} not found in receipts", transaction_hash))
 }
 
-/// Simplistic double spend detection
+/// Detect if any double spend exists for an object in a collection of receipts
+///
+/// A double spend is detected if the same object is modified by two different
+/// transactions in the same slot.
 ///
 /// # Parameters
 /// * `object_id` - ID of the object to check
-/// * `transactions` - Collection of transaction receipts to analyze
+/// * `receipts` - Collection of transaction receipts to analyze
 ///
 /// # Returns
 /// A VerificationResult indicating whether a double spend was detected
@@ -269,7 +211,6 @@ mod tests {
     use super::*;
     use units_core::id::UnitsObjectId;
     use units_proofs::lattice_proof_engine::LatticeProofEngine;
-    use units_proofs::ProofEngine;
     use units_core::objects::TokenType;
     
     fn create_test_object() -> TokenizedObject {

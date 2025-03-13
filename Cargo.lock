@@ -1961,7 +1961,18 @@ dependencies = [
  "thiserror",
  "units-core",
  "units-proofs",
+ "units-scheduler",
  "units-storage-impl",
+ "units-transaction",
+]
+
+[[package]]
+name = "units-scheduler"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "units-core",
+ "units-transaction",
 ]
 
 [[package]]
@@ -1981,6 +1992,14 @@ dependencies = [
  "tokio",
  "units-core",
  "units-proofs",
+]
+
+[[package]]
+name = "units-transaction"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "units-core",
 ]
 
 [[package]]
