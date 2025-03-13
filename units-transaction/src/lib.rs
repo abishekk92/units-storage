@@ -4,6 +4,23 @@ use units_core::id::UnitsObjectId;
 /// A transaction hash uniquely identifies a transaction in the system
 pub type TransactionHash = [u8; 32];
 
+/// Represents the commitment level of a transaction
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CommitmentLevel {
+    /// Transaction is in-flight/processing and can be rolled back
+    Processing,
+    /// Transaction has been committed and cannot be rolled back
+    Committed,
+    /// Transaction has failed and cannot be executed again
+    Failed,
+}
+
+impl Default for CommitmentLevel {
+    fn default() -> Self {
+        CommitmentLevel::Processing
+    }
+}
+
 /// The result of a transaction conflict check
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConflictResult {
@@ -42,4 +59,33 @@ pub struct Transaction {
     
     /// The hash of the transaction
     pub hash: TransactionHash,
+    
+    /// The commitment level of this transaction
+    pub commitment_level: CommitmentLevel,
+}
+
+impl Transaction {
+    /// Create a new transaction with a Processing commitment level
+    pub fn new(instructions: Vec<Instruction>, hash: TransactionHash) -> Self {
+        Self {
+            instructions,
+            hash,
+            commitment_level: CommitmentLevel::Processing,
+        }
+    }
+    
+    /// Mark the transaction as committed
+    pub fn commit(&mut self) {
+        self.commitment_level = CommitmentLevel::Committed;
+    }
+    
+    /// Mark the transaction as failed
+    pub fn fail(&mut self) {
+        self.commitment_level = CommitmentLevel::Failed;
+    }
+    
+    /// Check if the transaction can be rolled back
+    pub fn can_rollback(&self) -> bool {
+        self.commitment_level == CommitmentLevel::Processing
+    }
 }
