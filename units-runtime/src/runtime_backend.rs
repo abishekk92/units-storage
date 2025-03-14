@@ -14,7 +14,7 @@ pub enum InstructionResult {
     Error(String),
 }
 
-/// The execution context provided to an instruction
+/// The execution context provided to a program via its entrypoint
 #[derive(Debug, Clone)]
 pub struct InstructionContext<'a> {
     /// The transaction hash for the current execution
@@ -26,10 +26,10 @@ pub struct InstructionContext<'a> {
     /// Additional parameters available to the instruction
     pub parameters: HashMap<String, String>,
 
-    /// The program object ID being executed (if this is a program call)
+    /// The program object ID being executed (required for program calls)
     pub program_id: Option<UnitsObjectId>,
 
-    /// The entrypoint function to call (if this is a program call)
+    /// The entrypoint function to call (required for program calls)
     pub entrypoint: Option<String>,
 }
 
@@ -41,19 +41,9 @@ pub trait RuntimeBackend: Send + Sync {
     /// Get the runtime type this backend handles
     fn runtime_type(&self) -> RuntimeType;
 
-    /// Execute an instruction with the provided context
-    ///
-    /// This method takes an instruction and its execution context and returns either
-    /// a map of modified objects or an error.
-    fn execute<'a>(
-        &self,
-        instruction: &Instruction,
-        context: InstructionContext<'a>,
-    ) -> InstructionResult;
-
     /// Execute a program stored in a TokenizedObject
     ///
-    /// This specialized method handles executing a code object with the given entrypoint.
+    /// This method handles executing a code object with the given entrypoint.
     fn execute_program<'a>(
         &self,
         program: &TokenizedObject,
@@ -115,32 +105,6 @@ impl RuntimeBackendManager {
         runtime_type: RuntimeType,
     ) -> Option<Arc<dyn RuntimeBackend>> {
         self.backends_by_runtime.get(&runtime_type).cloned()
-    }
-
-    /// Execute an instruction directly using the appropriate backend
-    pub fn execute_instruction<'a>(
-        &self,
-        instruction: &Instruction,
-        mut context: InstructionContext<'a>,
-    ) -> Result<HashMap<UnitsObjectId, TokenizedObject>, ExecutionError> {
-        // Prefer the runtime_type field if it exists, otherwise fall back to instruction_type
-        // This ensures backward compatibility while encouraging use of the new field
-        let backend = self
-            .get_backend_for_runtime(instruction.runtime_type)
-            .ok_or_else(|| {
-                ExecutionError::NoBackendAvailableForRuntime(instruction.runtime_type)
-            })?;
-
-        // Set the entrypoint if specified
-        if context.entrypoint.is_none() {
-            context.entrypoint = Some(instruction.entrypoint().to_string());
-        }
-
-        // Execute the instruction
-        match backend.execute(instruction, context) {
-            InstructionResult::Success(objects) => Ok(objects),
-            InstructionResult::Error(message) => Err(ExecutionError::ExecutionFailed(message)),
-        }
     }
 
     /// Execute a program call instruction
@@ -241,51 +205,6 @@ impl RuntimeBackend for WasmRuntimeBackend {
         RuntimeType::Wasm
     }
 
-    fn execute<'a>(
-        &self,
-        instruction: &Instruction,
-        context: InstructionContext<'a>,
-    ) -> InstructionResult {
-        // Find the code object
-        let code_object = match context.objects.get(&instruction.code_object_id) {
-            Some(obj) => obj,
-            None => {
-                return InstructionResult::Error(format!(
-                    "Code object not found: {}",
-                    instruction.code_object_id
-                ))
-            }
-        };
-
-        // Get code metadata
-        let metadata = match code_object.get_code_metadata() {
-            Some(metadata) => metadata,
-            None => {
-                return InstructionResult::Error(format!(
-                    "Invalid code object: {}",
-                    instruction.code_object_id
-                ))
-            }
-        };
-
-        // In a real implementation, we would:
-        // 1. Set up a WebAssembly runtime environment (wasmtime, wasmer, etc.)
-        // 2. Load the WebAssembly module from the code object's data
-        // 3. Serialize the context.objects to pass to the WebAssembly module
-        // 4. Execute the module with the instruction parameters
-        // 5. Deserialize any objects modified by the module
-
-        log::debug!(
-            "Would execute WebAssembly code object ({}): entrypoint: {}, params: {} bytes",
-            instruction.code_object_id,
-            metadata.entrypoint,
-            instruction.params.len()
-        );
-
-        // For this example, we'll just return a mock result
-        InstructionResult::Error("WebAssembly execution not implemented yet".to_string())
-    }
-
     fn execute_program<'a>(
         &self,
         program: &TokenizedObject,
@@ -341,22 +260,6 @@ impl RuntimeBackend for EbpfRuntimeBackend {
 
     fn runtime_type(&self) -> RuntimeType {
         RuntimeType::Ebpf
-    }
-
-    fn execute<'a>(
-        &self,
-        _instruction: &Instruction,
-        _context: InstructionContext<'a>,
-    ) -> InstructionResult {
-        // In a real implementation, we would:
-        // 1. Set up an eBPF runtime environment
-        // 2. Load the eBPF bytecode from instruction.data
-        // 3. Set up memory maps for the objects in context
-        // 4. Execute the eBPF program with the provided context
-        // 5. Collect any modified objects from the memory maps
-
-        // For this example, we'll just return a mock result
-        InstructionResult::Error("eBPF execution not implemented yet".to_string())
     }
 
     fn execute_program<'a>(

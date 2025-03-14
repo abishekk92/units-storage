@@ -5,13 +5,14 @@ use units_core::error::StorageError;
 use units_core::id::UnitsObjectId;
 use units_core::objects::TokenizedObject;
 use units_core::scheduler::{BasicConflictChecker, ConflictChecker};
-use units_core::transaction::{CommitmentLevel, ConflictResult, Instruction, Transaction, TransactionEffect, TransactionHash, TransactionReceipt};
+use units_core::transaction::{
+    CommitmentLevel, ConflictResult, Transaction, TransactionEffect, TransactionHash,
+    TransactionReceipt,
+};
 use units_proofs::SlotNumber;
 
 use crate::runtime::Runtime;
-use crate::runtime_backend::{
-    ExecutionError, InstructionContext, RuntimeBackendManager
-};
+use crate::runtime_backend::RuntimeBackendManager;
 use units_storage_impl::storage_traits::{TransactionReceiptStorage, UnitsReceiptIterator};
 
 /// Mock implementation of the Runtime trait for testing purposes
@@ -33,7 +34,7 @@ impl MockRuntime {
     pub fn new() -> Self {
         // Create a runtime backend manager with default backends
         let backend_manager = RuntimeBackendManager::with_default_backends();
-        
+
         Self {
             transactions: HashMap::new(),
             receipts: HashMap::new(),
@@ -79,44 +80,6 @@ impl Runtime for MockRuntime {
     fn backend_manager(&self) -> &RuntimeBackendManager {
         &self.backend_manager
     }
-    
-    fn execute_instruction(
-        &self,
-        instruction: &Instruction,
-        transaction_hash: &TransactionHash,
-        objects: HashMap<UnitsObjectId, TokenizedObject>,
-        parameters: HashMap<String, String>,
-    ) -> Result<HashMap<UnitsObjectId, TokenizedObject>, ExecutionError> {
-        // Create the context for execution
-        let context = InstructionContext {
-            transaction_hash,
-            objects: objects.clone(),
-            parameters,
-            program_id: None,
-            entrypoint: None,
-        };
-        
-        // Try to execute the instruction using the backend manager
-        // If this fails (no backend available), we'll use a mock execution for testing
-        match self.backend_manager.execute_instruction(instruction, context) {
-            Ok(result) => Ok(result),
-            Err(_) => {
-                // Mock execution for testing (just pretends all instructions succeed)
-                let mut result = HashMap::new();
-                for (object_id, _) in &instruction.object_intents {
-                    if let Some(object) = objects.get(object_id) {
-                        // Create a modified copy of the object to simulate execution
-                        let mut modified = object.clone();
-                        // For mock, we just append the transaction hash to the data for testing
-                        modified.data.extend_from_slice(transaction_hash);
-                        result.insert(*object_id, modified);
-                    }
-                }
-                
-                Ok(result)
-            }
-        }
-    }
     fn check_conflicts(&self, transaction: &Transaction) -> Result<ConflictResult, String> {
         // Get recent transactions for testing (last 10)
         let recent_transactions: Vec<_> = self.transactions.values().cloned().collect();
@@ -149,7 +112,7 @@ impl Runtime for MockRuntime {
         // Process each instruction in the transaction
         let transaction_hash = transaction.hash;
         let mut all_modified_objects = HashMap::new();
-        
+
         for instruction in transaction.instructions {
             // Load the objects this instruction needs access to
             let mut objects = HashMap::new();
@@ -166,32 +129,31 @@ impl Runtime for MockRuntime {
                     return receipt;
                 }
             }
-            
-            // Empty parameters for testing
-            let parameters = HashMap::new();
-            
-            // Execute the instruction
-            match self.execute_instruction(&instruction, &transaction_hash, objects, parameters) {
-                Ok(modified_objects) => {
-                    // Track the modified objects
-                    for (id, object) in modified_objects {
-                        all_modified_objects.insert(id, object);
-                    }
-                }
-                Err(error) => {
-                    // If any instruction fails, mark the transaction as failed
-                    receipt.set_error(format!("Instruction execution failed: {}", error));
-                    mock.add_receipt(receipt.clone());
-                    return receipt;
+
+            // Mock execution for testing (just pretends all instructions succeed)
+            // In a real implementation, we would use execute_program_call instead
+            let mut modified_objects = HashMap::new();
+            for (object_id, _) in &instruction.object_intents {
+                if let Some(object) = objects.get(object_id) {
+                    // Create a modified copy of the object to simulate execution
+                    let mut modified = object.clone();
+                    // For mock, we just append the transaction hash to the data for testing
+                    modified.data.extend_from_slice(&transaction_hash);
+                    modified_objects.insert(*object_id, modified);
                 }
             }
+
+            // Track the modified objects
+            for (id, object) in modified_objects {
+                all_modified_objects.insert(id, object);
+            }
         }
-        
+
         // Create transaction effects for all modified objects
         for (object_id, modified_object) in all_modified_objects {
             // Get the previous state of the object (if any)
             let before_image = self.objects.get(&object_id).cloned();
-            
+
             // Create a transaction effect
             let effect = TransactionEffect {
                 transaction_hash,
@@ -199,7 +161,7 @@ impl Runtime for MockRuntime {
                 before_image,
                 after_image: Some(modified_object),
             };
-            
+
             receipt.add_effect(effect);
         }
 
@@ -407,10 +369,7 @@ impl TransactionReceiptStorage for InMemoryReceiptStorage {
         }
     }
 
-    fn get_receipts_for_object(
-        &self,
-        id: &UnitsObjectId,
-    ) -> Box<dyn UnitsReceiptIterator + '_> {
+    fn get_receipts_for_object(&self, id: &UnitsObjectId) -> Box<dyn UnitsReceiptIterator + '_> {
         // Get all transaction hashes for this object
         let transaction_hashes = {
             let receipts_by_object = self.receipts_by_object.lock().unwrap();

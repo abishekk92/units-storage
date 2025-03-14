@@ -51,38 +51,6 @@ pub trait Runtime {
         Ok(ConflictResult::NoConflict)
     }
 
-    /// Execute a single instruction with the appropriate runtime backend
-    ///
-    /// This method fetches the objects referenced by the instruction, builds the execution context,
-    /// selects the appropriate runtime backend based on the instruction type, and executes
-    /// the instruction.
-    ///
-    /// # Parameters
-    /// * `instruction` - The instruction to execute
-    /// * `transaction_hash` - The hash of the transaction containing this instruction
-    /// * `parameters` - Additional runtime parameters for the instruction
-    ///
-    /// # Returns
-    /// A map of object IDs to their updated state after execution
-    fn execute_instruction(
-        &self,
-        instruction: &Instruction,
-        transaction_hash: &TransactionHash,
-        objects: HashMap<UnitsObjectId, TokenizedObject>,
-        parameters: HashMap<String, String>,
-    ) -> Result<HashMap<UnitsObjectId, TokenizedObject>, ExecutionError> {
-        let context = InstructionContext {
-            transaction_hash,
-            objects,
-            parameters,
-            program_id: None,
-            entrypoint: None,
-        };
-
-        self.backend_manager()
-            .execute_instruction(instruction, context)
-    }
-
     /// Execute a program call instruction that references a previously deployed program
     ///
     /// # Parameters
@@ -114,7 +82,7 @@ pub trait Runtime {
             transaction_hash,
             objects,
             parameters,
-            program_id: None, // Will be set by execute_program_call
+            program_id: Some(*program_id), // Set program_id to ensure we're using program call path
             entrypoint: None, // Will be set by execute_program_call
         };
 

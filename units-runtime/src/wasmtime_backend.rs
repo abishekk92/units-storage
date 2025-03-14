@@ -26,25 +26,8 @@ use crate::runtime_backend::{
     HostEnvironment, InstructionContext, InstructionResult, RuntimeBackend,
 };
 
-/// Raw invocation context for WebAssembly modules.
-/// This structure helps us organize raw binary data to pass to WebAssembly modules.
-#[derive(Debug, Clone)]
-struct InvocationContext {
-    /// Binary serialized objects that this instruction has access to
-    objects_data: Vec<u8>,
-
-    /// Transaction hash for the current execution
-    transaction_hash: [u8; 32],
-
-    /// Additional parameters as raw bytes
-    parameters: Vec<u8>,
-
-    /// Program ID if this is a program call
-    program_id: Option<UnitsObjectId>,
-
-    /// Additional instruction parameters as raw bytes
-    instruction_params: Vec<u8>,
-}
+// Removed InvocationContext as we're now using InstructionContext directly
+// The binary data is handled through the host environment
 
 /// Helper functions for memory management in WebAssembly modules
 mod wasm_memory {
@@ -556,69 +539,6 @@ impl RuntimeBackend for WasmtimeRuntimeBackend {
         RuntimeType::Wasm
     }
 
-    fn execute<'a>(
-        &self,
-        instruction: &Instruction,
-        context: InstructionContext<'a>,
-    ) -> InstructionResult {
-        debug!("Executing WebAssembly instruction with Wasmtime");
-
-        // Get the code object using its ID
-        let code_object = match context.objects.get(&instruction.code_object_id) {
-            Some(obj) => obj,
-            None => {
-                return InstructionResult::Error(format!(
-                    "Code object not found: {}",
-                    instruction.code_object_id
-                ))
-            }
-        };
-
-        // Get the code from the code object
-        let code = match code_object.get_code() {
-            Some(code) => code,
-            None => {
-                return InstructionResult::Error(format!(
-                    "Invalid code object: {}",
-                    instruction.code_object_id
-                ))
-            }
-        };
-
-        // Get the entrypoint from the context if provided, otherwise use the standard one
-        let entrypoint = context
-            .entrypoint
-            .as_deref()
-            .unwrap_or(units_core::transaction::STANDARD_ENTRYPOINT);
-
-        debug!("Using entrypoint: {}", entrypoint);
-
-        // Create a host environment for this instruction execution
-        let host_env = match StandardHostEnvironment::for_instruction(
-            &instruction.params,
-            context.objects.clone(),
-            &context.parameters,
-            context.transaction_hash,
-        ) {
-            Ok(env) => Arc::new(Mutex::new(env)),
-            Err(e) => {
-                return InstructionResult::Error(format!(
-                    "Failed to create host environment: {}",
-                    e
-                ))
-            }
-        };
-
-        // Execute the WebAssembly module
-        match self.execute_module(code, entrypoint, host_env) {
-            Ok(modified_objects) => InstructionResult::Success(modified_objects),
-            Err(e) => {
-                error!("WebAssembly execution failed: {}", e);
-                InstructionResult::Error(format!("WebAssembly execution failed: {}", e))
-            }
-        }
-    }
-
     fn execute_program<'a>(
         &self,
         program: &TokenizedObject,
@@ -640,7 +560,7 @@ impl RuntimeBackend for WasmtimeRuntimeBackend {
         };
 
         // Create a host environment for this program execution
-        let program_id = context.program_id.unwrap_or(program.id);
+        let program_id = context.program_id.expect("Program ID must be provided for program execution");
         let host_env = match StandardHostEnvironment::for_program(
             program_id,
             args,

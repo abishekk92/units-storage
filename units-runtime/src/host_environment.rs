@@ -113,21 +113,7 @@ impl StandardHostEnvironment {
         })
     }
 
-    /// Create a host environment for instruction execution
-    pub fn for_instruction(
-        instruction_params: &[u8],
-        objects: HashMap<UnitsObjectId, TokenizedObject>,
-        parameters: &HashMap<String, String>,
-        transaction_hash: &TransactionHash,
-    ) -> Result<Self> {
-        Self::new(
-            objects,
-            parameters,
-            *transaction_hash,
-            None, // No program ID for direct instruction execution
-            instruction_params,
-        )
-    }
+    // This method is removed as we no longer support direct instruction execution
 
     /// Create a host environment for program execution
     pub fn for_program(
