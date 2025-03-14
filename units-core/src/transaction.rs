@@ -105,19 +105,6 @@ impl Instruction {
         }
     }
 
-    /// Create a new instruction with a custom entrypoint
-    pub fn with_custom_entrypoint(
-        params: Vec<u8>,
-        runtime_type: RuntimeType,
-        object_intents: Vec<(UnitsObjectId, AccessIntent)>,
-        code_object_id: UnitsObjectId,
-        entrypoint: String,
-    ) -> Self {
-        let mut instruction = Self::new(params, runtime_type, object_intents, code_object_id);
-        instruction.custom_entrypoint = Some(entrypoint);
-        instruction
-    }
-
     /// Get the effective entrypoint for this instruction
     pub fn entrypoint(&self) -> &str {
         self.custom_entrypoint
