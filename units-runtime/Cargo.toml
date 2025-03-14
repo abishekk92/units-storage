@@ -22,7 +22,7 @@ log.workspace = true
 chrono.workspace = true
 
 # Optional dependencies for runtime backends
-wasmtime = { version = "14.0.0", optional = true }
+wasmtime = { version = "24.0.2", optional = true }
 wat = { version = "1.0.78", optional = true }
 wasmtime-wasi = { version = "14.0.0", optional = true }
 
