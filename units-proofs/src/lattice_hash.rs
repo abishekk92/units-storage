@@ -388,11 +388,14 @@ mod tests {
 
         // Create 5 objects with different data
         for i in 0..5 {
-            let obj = TokenizedObject::new(
-                UnitsObjectId::unique_id_for_tests(),
-                UnitsObjectId::unique_id_for_tests(),
+            let id = UnitsObjectId::unique_id_for_tests();
+            let owner = UnitsObjectId::unique_id_for_tests();
+            let token_manager = UnitsObjectId::unique_id_for_tests();
+            let obj = UnitsObject::new_token(
+                id,
+                owner,
                 TokenType::Native,
-                UnitsObjectId::unique_id_for_tests(),
+                token_manager,
                 vec![i as u8, (i + 1) as u8, (i + 2) as u8],
             );
 
@@ -415,11 +418,11 @@ mod tests {
             );
 
             // Create a modified version of the object with different data
-            let modified_obj = TokenizedObject::new(
+            let modified_obj = UnitsObject::new_token(
                 *obj.id(),
-                *obj.holder(),
-                obj.token_type,
-                obj.token_manager,
+                *obj.owner(),
+                TokenType::Native,
+                *obj.token_manager().unwrap(),
                 vec![99, 100, 101], // completely different data
             );
 
