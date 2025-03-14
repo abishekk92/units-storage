@@ -9,27 +9,6 @@ pub use units_core::transaction::{
     TransactionHash, TransactionReceipt,
 };
 
-// Moved UnitsReceiptIterator and TransactionReceiptStorage to units-storage-impl::storage_traits
-
-/// Instruction reference types for execution
-#[derive(Debug, Clone)]
-pub enum InstructionReference {
-    /// Direct instruction with instruction data
-    Direct(Instruction),
-
-    /// Program call to execute a previously deployed program
-    ProgramCall {
-        /// The program object ID to execute
-        program_id: UnitsObjectId,
-
-        /// Arguments to pass to the program
-        args: Vec<u8>,
-
-        /// Object access intents for this call
-        object_intents: Vec<(UnitsObjectId, AccessIntent)>,
-    },
-}
-
 /// Runtime for executing transactions that modify TokenizedObjects
 pub trait Runtime {
     /// Get the runtime backend manager used by this runtime
@@ -83,7 +62,7 @@ pub trait Runtime {
             objects,
             parameters,
             program_id: Some(*program_id), // Set program_id to ensure we're using program call path
-            entrypoint: None, // Will be set by execute_program_call
+            entrypoint: None,              // Will be set by execute_program_call
         };
 
         self.backend_manager()
