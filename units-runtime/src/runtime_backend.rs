@@ -4,6 +4,7 @@ use std::sync::Arc;
 use units_core::id::UnitsObjectId;
 use units_core::objects::TokenizedObject;
 use units_core::transaction::{Instruction, RuntimeType, TransactionHash};
+use anyhow::Result as AnyhowResult;
 
 /// Result type for instruction execution
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -332,6 +333,49 @@ impl EbpfRuntimeBackend {
             name: "eBPF Runtime".to_string(),
         }
     }
+}
+
+/// A trait that abstracts the host machine functionalities for runtime backends
+///
+/// This trait provides a standard interface for guest programs to interact with
+/// host resources in a controlled manner. It allows for different implementations
+/// of host environments (e.g., sandboxed, testing, production) while maintaining
+/// a consistent interface for runtime backends.
+pub trait HostEnvironment: Send + Sync {
+    /// Log a message from the guest program at the specified level
+    /// - level 0: debug
+    /// - level 1: info
+    /// - level 2: warn
+    /// - level 3: error
+    fn log(&self, level: u8, message: &str);
+    
+    /// Store modified objects from guest program execution
+    /// Returns the number of objects successfully stored
+    fn store_modified_objects(&mut self, objects: HashMap<UnitsObjectId, TokenizedObject>) -> AnyhowResult<usize>;
+    
+    /// Get the serialized objects data accessible to the guest program
+    fn get_serialized_objects(&self) -> &[u8];
+    
+    /// Get the transaction hash for the current execution
+    fn get_transaction_hash(&self) -> &[u8; 32];
+    
+    /// Get the serialized parameters for the guest program
+    fn get_serialized_parameters(&self) -> &[u8];
+    
+    /// Get the program ID if the execution is in a program context
+    fn get_program_id(&self) -> Option<&UnitsObjectId>;
+    
+    /// Get the instruction parameters for the guest program
+    fn get_instruction_params(&self) -> &[u8];
+    
+    /// Get the raw objects that this environment has access to
+    fn get_objects(&self) -> &HashMap<UnitsObjectId, TokenizedObject>;
+    
+    /// Get mutable access to the objects this environment has access to
+    fn get_objects_mut(&mut self) -> &mut HashMap<UnitsObjectId, TokenizedObject>;
+    
+    /// Get the object modifications that have been stored during execution
+    fn get_modified_objects(&self) -> &HashMap<UnitsObjectId, TokenizedObject>;
 }
 
 impl RuntimeBackend for EbpfRuntimeBackend {
