@@ -1212,12 +1212,12 @@ mod tests {
 
     // Iterator implementations for testing
     struct MockProofIterator {
-        proofs: Vec<(SlotNumber, TokenizedObjectProof)>,
+        proofs: Vec<(SlotNumber, UnitsObjectProof)>,
         index: usize,
     }
 
     impl Iterator for MockProofIterator {
-        type Item = Result<(SlotNumber, TokenizedObjectProof), StorageError>;
+        type Item = Result<(SlotNumber, UnitsObjectProof), StorageError>;
 
         fn next(&mut self) -> Option<Self::Item> {
             if self.index < self.proofs.len() {
@@ -1254,12 +1254,12 @@ mod tests {
     impl UnitsStateProofIterator for MockStateProofIterator {}
 
     struct MockStorageIterator {
-        objects: Vec<TokenizedObject>,
+        objects: Vec<UnitsObject>,
         index: usize,
     }
 
     impl Iterator for MockStorageIterator {
-        type Item = Result<TokenizedObject, StorageError>;
+        type Item = Result<UnitsObject, StorageError>;
 
         fn next(&mut self) -> Option<Self::Item> {
             if self.index < self.objects.len() {
@@ -1276,13 +1276,15 @@ mod tests {
 
     // Mock implementation for RocksDB storage that avoids database interaction
     struct MockRocksDbStorage {
-        objects: Arc<Mutex<HashMap<UnitsObjectId, TokenizedObject>>>,
-        proofs: Arc<Mutex<HashMap<UnitsObjectId, Vec<(SlotNumber, TokenizedObjectProof)>>>>,
+        objects: Arc<Mutex<HashMap<UnitsObjectId, UnitsObject>>>,
+        proofs: Arc<Mutex<HashMap<UnitsObjectId, Vec<(SlotNumber, UnitsObjectProof)>>>>,
         state_proofs: Arc<Mutex<HashMap<SlotNumber, StateProof>>>,
         current_slot: Arc<Mutex<SlotNumber>>,
         proof_engine: LatticeProofEngine,
         // Track historical versions of objects for get_at_slot
-        object_history: Arc<Mutex<HashMap<UnitsObjectId, Vec<(SlotNumber, TokenizedObject)>>>>,
+        object_history: Arc<Mutex<HashMap<UnitsObjectId, Vec<(SlotNumber, UnitsObject)>>>>,
+        // Lock manager for implementation
+        lock_manager: Arc<Mutex<()>>,
     }
 
     impl MockRocksDbStorage {
@@ -1294,6 +1296,7 @@ mod tests {
                 current_slot: Arc::new(Mutex::new(1000)), // Start at a base slot number
                 proof_engine: LatticeProofEngine::new(),
                 object_history: Arc::new(Mutex::new(HashMap::new())),
+                lock_manager: Arc::new(Mutex::new(())),
             }
         }
 
@@ -1312,8 +1315,8 @@ mod tests {
 
         fn record_update(
             &self,
-            _object: &TokenizedObject,
-            _proof: &TokenizedObjectProof,
+            _object: &UnitsObject,
+            _proof: &UnitsObjectProof,
             _transaction_hash: Option<[u8; 32]>,
         ) -> Result<(), StorageError> {
             Ok(())
@@ -1338,7 +1341,7 @@ mod tests {
         fn get_proof(
             &self,
             id: &UnitsObjectId,
-        ) -> Result<Option<TokenizedObjectProof>, StorageError> {
+        ) -> Result<Option<UnitsObjectProof>, StorageError> {
             let proofs = self.proofs.lock().unwrap();
 
             if let Some(proof_vec) = proofs.get(id) {
@@ -1353,7 +1356,7 @@ mod tests {
         fn get_proof_history(&self, id: &UnitsObjectId) -> Box<dyn UnitsProofIterator + '_> {
             let proofs = self.proofs.lock().unwrap();
 
-            let result: Vec<(SlotNumber, TokenizedObjectProof)> =
+            let result: Vec<(SlotNumber, UnitsObjectProof)> =
                 if let Some(proof_vec) = proofs.get(id) {
                     proof_vec
                         .iter()
@@ -1377,7 +1380,7 @@ mod tests {
             &self,
             id: &UnitsObjectId,
             slot: SlotNumber,
-        ) -> Result<Option<TokenizedObjectProof>, StorageError> {
+        ) -> Result<Option<UnitsObjectProof>, StorageError> {
             let proofs = self.proofs.lock().unwrap();
 
             if let Some(proof_vec) = proofs.get(id) {
@@ -1417,7 +1420,7 @@ mod tests {
         fn verify_proof(
             &self,
             id: &UnitsObjectId,
-            proof: &TokenizedObjectProof,
+            proof: &UnitsObjectProof,
         ) -> Result<bool, StorageError> {
             match self.get(id)? {
                 Some(object) => self.proof_engine.verify_object_proof(&object, proof),
@@ -1432,7 +1435,7 @@ mod tests {
             end_slot: SlotNumber,
         ) -> Result<bool, StorageError> {
             // Get all proofs between start and end slots
-            let mut proofs: Vec<(SlotNumber, TokenizedObjectProof)> = self
+            let mut proofs: Vec<(SlotNumber, UnitsObjectProof)> = self
                 .get_proof_history(id)
                 .filter_map(|result| {
                     result
@@ -1449,7 +1452,7 @@ mod tests {
             proofs.sort_by_key(|(slot, _)| *slot);
 
             // Get the corresponding object states
-            let mut object_states: Vec<(SlotNumber, TokenizedObject)> = Vec::new();
+            let mut object_states: Vec<(SlotNumber, UnitsObject)> = Vec::new();
             for (slot, _) in &proofs {
                 if let Some(obj) = self.get_at_slot(id, *slot)? {
                     object_states.push((*slot, obj));
@@ -1485,7 +1488,13 @@ mod tests {
     }
 
     impl UnitsStorage for MockRocksDbStorage {
-        fn get(&self, id: &UnitsObjectId) -> Result<Option<TokenizedObject>, StorageError> {
+        fn lock_manager(&self) -> &dyn LockManagerTrait<Error = StorageError> {
+            // This is just a dummy implementation since we don't need real locking in tests
+            // No methods will actually be called on this
+            unimplemented!("Mock lock manager not implemented for tests")
+        }
+        
+        fn get(&self, id: &UnitsObjectId) -> Result<Option<UnitsObject>, StorageError> {
             let objects = self.objects.lock().unwrap();
             if let Some(obj) = objects.get(id) {
                 Ok(Some(obj.clone()))
@@ -1498,7 +1507,7 @@ mod tests {
             &self,
             id: &UnitsObjectId,
             slot: SlotNumber,
-        ) -> Result<Option<TokenizedObject>, StorageError> {
+        ) -> Result<Option<UnitsObject>, StorageError> {
             // For testing, find the object state as it was at the given slot
             // Look through the history to find the version at or before the requested slot
             let mut object_history = self.object_history.lock().unwrap();
@@ -1522,9 +1531,9 @@ mod tests {
 
         fn set(
             &self,
-            object: &TokenizedObject,
+            object: &UnitsObject,
             transaction_hash: Option<[u8; 32]>,
-        ) -> Result<TokenizedObjectProof, StorageError> {
+        ) -> Result<UnitsObjectProof, StorageError> {
             // Get previous proof if it exists
             let prev_proof = self.get_proof(object.id())?;
 
@@ -1568,7 +1577,7 @@ mod tests {
             &self,
             id: &UnitsObjectId,
             transaction_hash: Option<[u8; 32]>,
-        ) -> Result<TokenizedObjectProof, StorageError> {
+        ) -> Result<UnitsObjectProof, StorageError> {
             // Get the object
             let object = match self.get(id)? {
                 Some(obj) => obj,
@@ -1631,7 +1640,7 @@ mod tests {
 
         fn scan(&self) -> Box<dyn UnitsStorageIterator + '_> {
             let objects = self.objects.lock().unwrap();
-            let values: Vec<TokenizedObject> = objects.values().cloned().collect();
+            let values: Vec<UnitsObject> = objects.values().cloned().collect();
 
             Box::new(MockStorageIterator {
                 objects: values,
@@ -1659,7 +1668,7 @@ mod tests {
         let id = UnitsObjectId::unique_id_for_tests();
         let holder = UnitsObjectId::unique_id_for_tests();
         let token_manager = UnitsObjectId::unique_id_for_tests();
-        let obj = TokenizedObject::new(
+        let obj = UnitsObject::new_token(
             id,
             holder,
             TokenType::Native,
@@ -1674,11 +1683,11 @@ mod tests {
         // Verify the retrieved object is the same as the one we set
         assert!(retrieved.is_some());
         let retrieved = retrieved.unwrap();
-        assert_eq!(*retrieved.id(), obj.base.id);
-        assert_eq!(*retrieved.holder(), obj.base.owner);
-        assert_eq!(retrieved.token_type, obj.token_type);
-        assert_eq!(retrieved.token_manager, obj.token_manager);
-        assert_eq!(retrieved.base.data, obj.base.data);
+        assert_eq!(*retrieved.id(), *obj.id());
+        assert_eq!(*retrieved.owner(), *obj.owner());
+        assert_eq!(retrieved.object_type, obj.object_type);
+        assert_eq!(retrieved.token_manager(), obj.token_manager());
+        assert_eq!(retrieved.data(), obj.data());
 
         // Test delete
         storage.delete(&id, None).unwrap();
@@ -1694,7 +1703,7 @@ mod tests {
         let storage = MockRocksDbStorage::new();
 
         // Create test objects
-        let obj1 = TokenizedObject::new(
+        let obj1 = UnitsObject::new_token(
             UnitsObjectId::unique_id_for_tests(),
             UnitsObjectId::unique_id_for_tests(),
             TokenType::Native,
@@ -1702,10 +1711,10 @@ mod tests {
             vec![1, 2, 3, 4],
         );
 
-        let obj2 = TokenizedObject::new(
+        let obj2 = UnitsObject::new_token(
             UnitsObjectId::unique_id_for_tests(),
             UnitsObjectId::unique_id_for_tests(),
-            TokenType::Custodial,
+            TokenType::Native, // Using Native since Custodial isn't available
             UnitsObjectId::unique_id_for_tests(),
             vec![5, 6, 7, 8],
         );
@@ -1747,7 +1756,7 @@ mod tests {
         // Create and store test objects
         let mut objects = Vec::new();
         for i in 0..5 {
-            let obj = TokenizedObject::new(
+            let obj = UnitsObject::new_token(
                 UnitsObjectId::unique_id_for_tests(),
                 UnitsObjectId::unique_id_for_tests(),
                 TokenType::Native,
@@ -1768,10 +1777,10 @@ mod tests {
             let obj = result.unwrap();
             let found = objects.iter().any(|test_obj| {
                 *test_obj.id() == *obj.id()
-                    && *test_obj.holder() == *obj.holder()
-                    && test_obj.token_type == obj.token_type
-                    && test_obj.token_manager == obj.token_manager
-                    && test_obj.base.data == obj.base.data
+                    && *test_obj.owner() == *obj.owner()
+                    && test_obj.object_type == obj.object_type
+                    && test_obj.token_manager().unwrap() == obj.token_manager().unwrap()
+                    && test_obj.data() == obj.data()
             });
             assert!(found, "Iterator returned an unexpected object");
         }
@@ -1789,7 +1798,7 @@ mod tests {
         let id = UnitsObjectId::unique_id_for_tests();
         let holder = UnitsObjectId::unique_id_for_tests();
         let token_manager = UnitsObjectId::unique_id_for_tests();
-        let mut obj = TokenizedObject::new(
+        let mut obj = UnitsObject::new_token(
             id,
             holder,
             TokenType::Native,
@@ -1801,14 +1810,26 @@ mod tests {
         let proof1 = storage.set(&obj, None).unwrap();
         println!("Initial proof slot: {}", proof1.slot);
 
-        // Modify and store the object again to create a chain of proofs
-        obj.base.data = vec![5, 6, 7, 8];
+        // Create a new version with modified data
+        let mut obj = UnitsObject::new_token(
+            *obj.id(),
+            *obj.owner(),
+            TokenType::Native,
+            *obj.token_manager().unwrap(),
+            vec![5, 6, 7, 8],
+        );
         let proof2 = storage.set(&obj, None).unwrap();
         println!("Second proof slot: {}", proof2.slot);
         println!("Second proof prev_hash: {:?}", proof2.prev_proof_hash);
 
-        // Modify and store once more
-        obj.base.data = vec![9, 10, 11, 12];
+        // Create a third version with modified data
+        let obj = UnitsObject::new_token(
+            *obj.id(),
+            *obj.owner(),
+            TokenType::Native,
+            *obj.token_manager().unwrap(),
+            vec![9, 10, 11, 12],
+        );
         let proof3 = storage.set(&obj, None).unwrap();
         println!("Third proof slot: {}", proof3.slot);
         println!("Third proof prev_hash: {:?}", proof3.prev_proof_hash);

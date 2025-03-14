@@ -211,19 +211,19 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
     use units_core::id::UnitsObjectId;
-    use units_core::objects::{ObjectType, UnitsObject};
-    use units_proofs::SlotNumber;
+    use units_core::objects::UnitsObject;
 
     // Helper to create a test object
     fn create_test_object() -> UnitsObject {
         let id = UnitsObjectId::random();
         let owner = UnitsObjectId::random();
+        let token_manager = UnitsObjectId::random();
 
-        UnitsObject::new(
+        UnitsObject::new_token(
             id,
             owner,
-            ObjectType::Data,
-            vec![],  // metadata
+            units_core::objects::TokenType::Native,
+            token_manager,
             vec![1, 2, 3, 4], // data
         )
     }
@@ -247,7 +247,7 @@ mod tests {
     // Helper to create a test state proof
     fn create_test_state_proof() -> StateProof {
         let current_slot = 1234u64; // Mock slot number for testing
-        
+
         StateProof {
             slot: current_slot,
             prev_state_proof_hash: None,
