@@ -132,17 +132,7 @@ impl RuntimeBackendManager {
         // Get the runtime type from the metadata
         let runtime_type = metadata.runtime_type;
 
-        // Determine the entrypoint to use, in order of priority:
-        // 1. Use the instruction's custom entrypoint if specified
-        // 2. Use the program's entrypoint from metadata if not using standard
-        // 3. Fall back to the standard "main" entrypoint
-        let entrypoint = if let Some(custom) = &instruction.custom_entrypoint {
-            custom.as_str()
-        } else if metadata.entrypoint != units_core::transaction::STANDARD_ENTRYPOINT {
-            metadata.entrypoint.as_str()
-        } else {
-            instruction.entrypoint() // This will return STANDARD_ENTRYPOINT
-        };
+        let entrypoint = instruction.entrypoint(); // This will return STANDARD_ENTRYPOINT
 
         // Get the appropriate backend for this program's runtime type
         let backend = self

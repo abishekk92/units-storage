@@ -76,11 +76,6 @@ pub struct Instruction {
     /// The ID of the code object to execute
     /// All code execution must come from a verified code object for security
     pub code_object_id: UnitsObjectId,
-
-    /// Custom entrypoint name (if not using the standard entrypoint)
-    /// If None, STANDARD_ENTRYPOINT ("main") will be used
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub custom_entrypoint: Option<String>,
 }
 
 impl Instruction {
@@ -101,15 +96,12 @@ impl Instruction {
             runtime_type,
             object_intents,
             code_object_id,
-            custom_entrypoint: None,
         }
     }
 
     /// Get the effective entrypoint for this instruction
     pub fn entrypoint(&self) -> &str {
-        self.custom_entrypoint
-            .as_deref()
-            .unwrap_or(STANDARD_ENTRYPOINT)
+        STANDARD_ENTRYPOINT
     }
 
     /// Create a new WebAssembly instruction
