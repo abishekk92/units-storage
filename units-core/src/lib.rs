@@ -10,13 +10,9 @@ pub use error::StorageError;
 pub use id::UnitsObjectId;
 pub use objects::{
     TokenType, 
-    TokenizedObject, 
-    CodeObject, 
-    CodeObjectMetadata, 
     UnitsObject,
     ObjectType,
-    ObjectMetadata,
-    LegacyUnitsObject
+    ObjectMetadata
 };
 
 // Re-export lock types
@@ -38,7 +34,6 @@ pub use transaction::{
     TransactionHash,
     TransactionReceipt,
     ObjectEffect,
-    UnifiedObjectEffect,
 };
 
 // Re-export scheduler types

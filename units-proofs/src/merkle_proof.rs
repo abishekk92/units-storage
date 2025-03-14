@@ -1,10 +1,10 @@
-use crate::engine::{ProofEngine, SlotNumber, StateProof, TokenizedObjectProof};
+use crate::engine::{ProofEngine, SlotNumber, StateProof, UnitsObjectProof};
 use blake3;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Debug;
 use units_core::error::StorageError;
 use units_core::id::UnitsObjectId;
-use units_core::objects::TokenizedObject;
+use units_core::objects::UnitsObject;
 
 /// A simplified implementation of a Jellyfish Merkle Tree
 ///
@@ -73,7 +73,7 @@ impl MerkleTree {
     }
 
     /// Add a leaf to the tree and update all affected nodes
-    pub fn insert(&mut self, object: &TokenizedObject) -> [u8; 32] {
+    pub fn insert(&mut self, object: &UnitsObject) -> [u8; 32] {
         // Hash the object to create the leaf value
         let leaf_hash = Self::hash_object(object);
 
@@ -125,7 +125,7 @@ impl MerkleTree {
     }
 
     /// Generate a proof of inclusion for an object
-    pub fn generate_proof(&self, object: &TokenizedObject) -> Option<MerkleProof> {
+    pub fn generate_proof(&self, object: &UnitsObject) -> Option<MerkleProof> {
         // Get the leaf hash
         let leaf_hash = self.leaves.get(object.id().as_ref())?;
 
@@ -195,19 +195,32 @@ impl MerkleTree {
         current_hash == self.root
     }
 
-    /// Hash a TokenizedObject to create a leaf hash
-    pub fn hash_object(object: &TokenizedObject) -> [u8; 32] {
+    /// Hash a UnitsObject to create a leaf hash
+    pub fn hash_object(object: &UnitsObject) -> [u8; 32] {
         // Create a leaf prefix to distinguish from internal nodes
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"LEAF:");
         hasher.update(object.id().as_ref());
-        hasher.update(object.holder().as_ref());
-        hasher.update(object.token_manager.as_ref());
-        hasher.update(&[match object.token_type {
-            units_core::objects::TokenType::Native => 0,
-            units_core::objects::TokenType::Custodial => 1,
-            units_core::objects::TokenType::Proxy => 2,
-        }]);
+        hasher.update(object.owner().as_ref());
+        
+        // Add type-specific data based on object type
+        match &object.metadata {
+            units_core::objects::ObjectMetadata::Token { token_type, token_manager } => {
+                hasher.update(token_manager.as_ref());
+                hasher.update(&[match token_type {
+                    units_core::objects::TokenType::Native => 0,
+                    units_core::objects::TokenType::Custodial => 1,
+                    units_core::objects::TokenType::Proxy => 2,
+                }]);
+            },
+            units_core::objects::ObjectMetadata::Code { runtime_type, entrypoint } => {
+                hasher.update(&[match runtime_type {
+                    units_core::transaction::RuntimeType::Wasm => 1,
+                    units_core::transaction::RuntimeType::Ebpf => 2,
+                }]);
+                hasher.update(entrypoint.as_bytes());
+            },
+        }
         hasher.update(object.data());
 
         *hasher.finalize().as_bytes()
@@ -374,9 +387,9 @@ impl MerkleProofEngine {
     /// Helper method to add an object to the tree and generate a proof
     fn add_and_generate_proof(
         &mut self,
-        object: &TokenizedObject,
+        object: &UnitsObject,
         transaction_hash: Option<[u8; 32]>,
-    ) -> TokenizedObjectProof {
+    ) -> UnitsObjectProof {
         // Add the object to the tree (or update it if it already exists)
         self.tree.insert(object);
 
@@ -390,34 +403,34 @@ impl MerkleProofEngine {
         let serialized = serialize_proof(&proof);
 
         // Create a new proof
-        let mut token_proof = TokenizedObjectProof::new(serialized, None, transaction_hash);
+        let mut units_proof = UnitsObjectProof::new(serialized, None, transaction_hash);
 
         // Set the object-specific fields that the constructor doesn't handle
-        token_proof.object_id = object.id().clone();
-        token_proof.object_hash = MerkleTree::hash_object(object);
+        units_proof.object_id = *object.id();
+        units_proof.object_hash = MerkleTree::hash_object(object);
 
-        token_proof
+        units_proof
     }
 }
 
 impl ProofEngine for MerkleProofEngine {
-    /// Generate a proof for a TokenizedObject
+    /// Generate a proof for a UnitsObject
     fn generate_object_proof(
         &self,
-        object: &TokenizedObject,
-        prev_proof: Option<&TokenizedObjectProof>,
+        object: &UnitsObject,
+        prev_proof: Option<&UnitsObjectProof>,
         transaction_hash: Option<[u8; 32]>,
-    ) -> Result<TokenizedObjectProof, StorageError> {
+    ) -> Result<UnitsObjectProof, StorageError> {
         // For immutability compliance, clone the engine and use the helper method
         let mut engine_clone = self.clone();
         let helper_proof = engine_clone.add_and_generate_proof(object, transaction_hash);
         let proof_data = helper_proof.proof_data.clone();
 
         // Create a new proof that links to the previous state and includes transaction hash
-        let mut proof = TokenizedObjectProof::new(proof_data, prev_proof, transaction_hash);
+        let mut proof = UnitsObjectProof::new(proof_data, prev_proof, transaction_hash);
 
         // Set the object-specific fields that the constructor doesn't handle
-        proof.object_id = object.id().clone();
+        proof.object_id = *object.id();
         proof.object_hash = MerkleTree::hash_object(object);
 
         Ok(proof)
@@ -426,9 +439,9 @@ impl ProofEngine for MerkleProofEngine {
     /// Verify the chain of proofs for an object
     fn verify_proof_chain(
         &self,
-        object: &TokenizedObject,
-        proof: &TokenizedObjectProof,
-        prev_proof: &TokenizedObjectProof,
+        object: &UnitsObject,
+        proof: &UnitsObjectProof,
+        prev_proof: &UnitsObjectProof,
     ) -> Result<bool, StorageError> {
         // First verify the current proof for the object
         if !self.verify_object_proof(object, proof)? {
@@ -452,7 +465,7 @@ impl ProofEngine for MerkleProofEngine {
     /// Generate a state proof from multiple object proofs
     fn generate_state_proof(
         &self,
-        object_proofs: &[(UnitsObjectId, TokenizedObjectProof)],
+        object_proofs: &[(UnitsObjectId, UnitsObjectProof)],
         prev_state_proof: Option<&StateProof>,
         _slot: SlotNumber,
     ) -> Result<StateProof, StorageError> {
@@ -463,19 +476,22 @@ impl ProofEngine for MerkleProofEngine {
         let root = tree_clone.root_hash();
 
         // Extract the object IDs
-        let included_objects = object_proofs.iter().map(|(id, _)| id.clone()).collect();
+        let included_objects = object_proofs.iter().map(|(id, _)| *id).collect();
 
-        // Create the state proof
-        let state_proof = StateProof::new(root.to_vec(), included_objects, prev_state_proof);
-
-        Ok(state_proof)
+        // Create a state proof
+        Ok(StateProof {
+            slot: _slot,
+            prev_state_proof_hash: prev_state_proof.map(|p| p.hash()),
+            object_ids: included_objects,
+            proof_data: root.to_vec(),
+        })
     }
 
     /// Verify that an object's state matches its proof
     fn verify_object_proof(
         &self,
-        object: &TokenizedObject,
-        proof: &TokenizedObjectProof,
+        object: &UnitsObject,
+        proof: &UnitsObjectProof,
     ) -> Result<bool, StorageError> {
         // Deserialize the proof
         let merkle_proof = match deserialize_proof(&proof.proof_data) {
@@ -527,7 +543,7 @@ impl ProofEngine for MerkleProofEngine {
     fn verify_state_proof(
         &self,
         state_proof: &StateProof,
-        object_proofs: &[(UnitsObjectId, TokenizedObjectProof)],
+        object_proofs: &[(UnitsObjectId, UnitsObjectProof)],
     ) -> Result<bool, StorageError> {
         // For a Merkle tree, verifying the state proof means checking that
         // the state proof matches the root hash computed from all object proofs
@@ -597,17 +613,17 @@ impl ProofEngine for MerkleProofEngine {
 mod tests {
     use super::*;
     use units_core::id::UnitsObjectId;
-    use units_core::objects::{TokenType, TokenizedObject};
+    use units_core::objects::{TokenType, UnitsObject};
 
     #[test]
     fn test_merkle_proof_basic() {
         // Create a test object
         let id = UnitsObjectId::unique_id_for_tests();
-        let holder = UnitsObjectId::unique_id_for_tests();
+        let owner = UnitsObjectId::unique_id_for_tests();
         let token_manager = UnitsObjectId::unique_id_for_tests();
-        let obj = TokenizedObject::new(
+        let obj = UnitsObject::new_token(
             id,
-            holder,
+            owner,
             TokenType::Native,
             token_manager,
             vec![1, 2, 3, 4],
@@ -631,11 +647,11 @@ mod tests {
         assert!(tree.verify_proof(&deserialized));
 
         // Modify the object and verify the proof fails
-        let modified_obj = TokenizedObject::new(
+        let modified_obj = UnitsObject::new_token(
             *obj.id(),
-            *obj.holder(),
-            obj.token_type,
-            obj.token_manager,
+            *obj.owner(),
+            TokenType::Native,
+            token_manager,
             vec![5, 6, 7, 8],
         );
 
@@ -649,11 +665,11 @@ mod tests {
         use crate::proofs::current_slot;
         // Create a test object
         let id = units_core::id::UnitsObjectId::unique_id_for_tests();
-        let holder = units_core::id::UnitsObjectId::unique_id_for_tests();
+        let owner = units_core::id::UnitsObjectId::unique_id_for_tests();
         let token_manager = units_core::id::UnitsObjectId::unique_id_for_tests();
-        let obj = TokenizedObject::new(
-            id.clone(),
-            holder,
+        let obj = UnitsObject::new_token(
+            id,
+            owner,
             TokenType::Native,
             token_manager,
             vec![1, 2, 3, 4],
@@ -673,18 +689,18 @@ mod tests {
         assert!(engine.verify_object_proof(&obj, &proof).unwrap());
 
         // Modify the object and verify the proof fails
-        let modified_obj = TokenizedObject::new(
+        let modified_obj = UnitsObject::new_token(
             *obj.id(),
-            *obj.holder(),
-            obj.token_type,
-            obj.token_manager,
+            *obj.owner(),
+            TokenType::Native,
+            token_manager,
             vec![5, 6, 7, 8],
         );
 
         assert!(!engine.verify_object_proof(&modified_obj, &proof).unwrap());
 
         // Generate a state proof with the correct format
-        let proof_with_id = vec![(id.clone(), proof.clone())];
+        let proof_with_id = vec![(id, proof.clone())];
         let state_proof = engine
             .generate_state_proof(&proof_with_id, None, current_slot())
             .unwrap();
@@ -707,8 +723,8 @@ mod tests {
         // Create 5 objects with different data
         for i in 0..5 {
             let id = UnitsObjectId::unique_id_for_tests();
-            let obj = TokenizedObject::new(
-                id.clone(),
+            let obj = UnitsObject::new_token(
+                id,
                 UnitsObjectId::unique_id_for_tests(),
                 TokenType::Native,
                 UnitsObjectId::unique_id_for_tests(),
@@ -734,11 +750,11 @@ mod tests {
             assert!(engine.verify_object_proof(obj, proof).unwrap());
 
             // Create a modified version of the object
-            let modified_obj = TokenizedObject::new(
+            let modified_obj = UnitsObject::new_token(
                 *obj.id(),
-                *obj.holder(),
-                obj.token_type,
-                obj.token_manager,
+                *obj.owner(),
+                TokenType::Native,
+                *obj.token_manager().unwrap(),
                 vec![99, 100, 101], // completely different data
             );
 

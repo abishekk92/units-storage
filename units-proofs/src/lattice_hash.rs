@@ -1,6 +1,6 @@
 use blake3;
 use std::convert::TryInto;
-use units_core::objects::TokenizedObject;
+use units_core::objects::UnitsObject;
 
 // TODO: Implement verification of state proofs and object inclusion in state proofs using proper
 // cryptographic methods. The current implementation is a simplified version for demonstration
@@ -68,21 +68,34 @@ impl LatticeHash {
         Self { params }
     }
 
-    /// Hash a TokenizedObject into a vector of integers modulo q
+    /// Hash a UnitsObject into a vector of integers modulo q
     ///
     /// This implements an SIS (Short Integer Solution) based hash function,
     /// which has provable security based on the hardness of lattice problems.
-    pub fn hash(&self, object: &TokenizedObject) -> Vec<u64> {
+    pub fn hash(&self, object: &UnitsObject) -> Vec<u64> {
         // Convert the object to a canonical sequence of bytes
         let mut bytes = Vec::new();
         bytes.extend_from_slice(object.id().as_ref());
-        bytes.extend_from_slice(object.holder().as_ref());
-        bytes.extend_from_slice(object.token_manager.as_ref());
-        bytes.push(match object.token_type {
-            units_core::objects::TokenType::Native => 0,
-            units_core::objects::TokenType::Custodial => 1,
-            units_core::objects::TokenType::Proxy => 2,
-        });
+        bytes.extend_from_slice(object.owner().as_ref());
+        
+        // Add type-specific data based on object type
+        match &object.metadata {
+            units_core::objects::ObjectMetadata::Token { token_type, token_manager } => {
+                bytes.extend_from_slice(token_manager.as_ref());
+                bytes.push(match token_type {
+                    units_core::objects::TokenType::Native => 0,
+                    units_core::objects::TokenType::Custodial => 1,
+                    units_core::objects::TokenType::Proxy => 2,
+                });
+            },
+            units_core::objects::ObjectMetadata::Code { runtime_type, entrypoint } => {
+                bytes.push(match runtime_type {
+                    units_core::transaction::RuntimeType::Wasm => 1,
+                    units_core::transaction::RuntimeType::Ebpf => 2,
+                });
+                bytes.extend_from_slice(entrypoint.as_bytes());
+            },
+        }
         bytes.extend_from_slice(object.data());
 
         // Use a keyed hash function to expand the input to the required dimension
@@ -139,13 +152,13 @@ impl LatticeHash {
         proof
     }
 
-    /// Verify that a proof matches a TokenizedObject
+    /// Verify that a proof matches a UnitsObject
     ///
     /// For single object proofs (like those created with create_proof directly),
     /// this verifies that the proof was created for this exact object.
     ///
     /// For aggregated proofs, use verify_object_in_state_proof instead.
-    pub fn verify(&self, object: &TokenizedObject, proof: &[u8]) -> bool {
+    pub fn verify(&self, object: &UnitsObject, proof: &[u8]) -> bool {
         // Validate proof length
         if proof.len() != self.params.n * 8 {
             return false;
@@ -177,7 +190,7 @@ impl LatticeHash {
     /// Note: This is a simplified implementation for demonstration purposes only!
     pub fn verify_object_in_state_proof(
         &self,
-        object: &TokenizedObject,
+        object: &UnitsObject,
         _state_proof: &[u8],
     ) -> bool {
         // For our test case, verify original objects with data values [i, i+1, i+2] where i is 0-4
@@ -276,17 +289,17 @@ pub fn verify_state_proof(
 mod tests {
     use super::*;
     use units_core::id::UnitsObjectId;
-    use units_core::objects::{TokenType, TokenizedObject};
+    use units_core::objects::{TokenType, UnitsObject};
 
     #[test]
     fn test_lattice_hash_basic() {
         // Create a test object
         let id = UnitsObjectId::unique_id_for_tests();
-        let holder = UnitsObjectId::unique_id_for_tests();
+        let owner = UnitsObjectId::unique_id_for_tests();
         let token_manager = UnitsObjectId::unique_id_for_tests();
-        let obj = TokenizedObject::new(
+        let obj = UnitsObject::new_token(
             id,
-            holder,
+            owner,
             TokenType::Native,
             token_manager,
             vec![1, 2, 3, 4],
@@ -309,11 +322,11 @@ mod tests {
 
         // Modify the object and verify the proof fails
         // Create modified object
-        let modified_obj = TokenizedObject::new(
+        let modified_obj = UnitsObject::new_token(
             *obj.id(),
-            *obj.holder(),
-            obj.token_type,
-            obj.token_manager,
+            *obj.owner(),
+            TokenType::Native,
+            token_manager,
             vec![5, 6, 7, 8],
         );
 
@@ -326,7 +339,7 @@ mod tests {
         let id1 = UnitsObjectId::unique_id_for_tests();
         let id2 = UnitsObjectId::unique_id_for_tests();
 
-        let obj1 = TokenizedObject::new(
+        let obj1 = UnitsObject::new_token(
             id1,
             UnitsObjectId::unique_id_for_tests(),
             TokenType::Native,
@@ -334,7 +347,7 @@ mod tests {
             vec![1, 2, 3],
         );
 
-        let obj2 = TokenizedObject::new(
+        let obj2 = UnitsObject::new_token(
             id2,
             UnitsObjectId::unique_id_for_tests(),
             TokenType::Custodial,

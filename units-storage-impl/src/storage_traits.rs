@@ -1,21 +1,21 @@
 use serde::{Deserialize, Serialize};
 use units_core::error::StorageError;
 use units_core::id::UnitsObjectId;
-use units_core::locks::{AccessIntent, LockInfo, LockType};
-use units_core::objects::TokenizedObject;
+use units_core::objects::UnitsObject;
 use units_core::transaction::{CommitmentLevel, TransactionEffect, TransactionReceipt};
-use units_proofs::{ProofEngine, SlotNumber, StateProof, TokenizedObjectProof};
+use crate::lock_manager::LockManagerTrait;
+use units_proofs::{ProofEngine, SlotNumber, StateProof, UnitsObjectProof};
 
 use std::collections::HashMap;
 use std::iter::Iterator;
 use std::path::Path;
 
 /// Iterator for traversing objects in storage
-pub trait UnitsStorageIterator: Iterator<Item = Result<TokenizedObject, StorageError>> {}
+pub trait UnitsStorageIterator: Iterator<Item = Result<UnitsObject, StorageError>> {}
 
 /// Iterator for traversing object proofs in storage
 pub trait UnitsProofIterator:
-    Iterator<Item = Result<(SlotNumber, TokenizedObjectProof), StorageError>>
+    Iterator<Item = Result<(SlotNumber, UnitsObjectProof), StorageError>>
 {
 }
 
@@ -27,13 +27,13 @@ pub trait UnitsStateProofIterator: Iterator<Item = Result<StateProof, StorageErr
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WALEntry {
     /// The object being updated
-    pub object: TokenizedObject,
+    pub object: UnitsObject,
 
     /// The slot in which this update occurred
     pub slot: SlotNumber,
 
     /// The proof generated for this update
-    pub proof: TokenizedObjectProof,
+    pub proof: UnitsObjectProof,
 
     /// Timestamp of when this update was recorded
     pub timestamp: u64,
@@ -64,8 +64,8 @@ pub trait UnitsWriteAheadLog {
     /// Ok(()) if successful, Err otherwise
     fn record_update(
         &self,
-        object: &TokenizedObject,
-        proof: &TokenizedObjectProof,
+        object: &UnitsObject,
+        proof: &UnitsObjectProof,
         transaction_hash: Option<[u8; 32]>,
     ) -> Result<(), StorageError>;
 
@@ -106,7 +106,7 @@ pub trait UnitsStorageProofEngine {
     ///
     /// # Returns
     /// Some(proof) if the object exists, None otherwise
-    fn get_proof(&self, id: &UnitsObjectId) -> Result<Option<TokenizedObjectProof>, StorageError>;
+    fn get_proof(&self, id: &UnitsObjectId) -> Result<Option<UnitsObjectProof>, StorageError>;
 
     /// Get all historical proofs for a specific object
     ///
@@ -129,7 +129,7 @@ pub trait UnitsStorageProofEngine {
         &self,
         id: &UnitsObjectId,
         slot: SlotNumber,
-    ) -> Result<Option<TokenizedObjectProof>, StorageError>;
+    ) -> Result<Option<UnitsObjectProof>, StorageError>;
 
     /// Get all state proofs
     ///
@@ -158,7 +158,7 @@ pub trait UnitsStorageProofEngine {
     fn verify_proof(
         &self,
         id: &UnitsObjectId,
-        proof: &TokenizedObjectProof,
+        proof: &UnitsObjectProof,
     ) -> Result<bool, StorageError>;
 
     /// Verify a proof chain for a specific object
@@ -187,89 +187,11 @@ pub trait UnitsStorageProofEngine {
 
 /// Main storage interface for UNITS objects
 pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
-    /// Acquire a lock on an object for a transaction
-    fn acquire_object_lock(
-        &self,
-        _object_id: &UnitsObjectId,
-        _lock_type: LockType,
-        _transaction_hash: &[u8; 32],
-        _timeout_ms: Option<u64>,
-    ) -> Result<bool, StorageError> {
-        // Default implementation returns unimplemented
-        Err(StorageError::Unimplemented(
-            "Acquiring object locks not implemented by this storage".to_string(),
-        ))
-    }
-
-    /// Release a lock on an object for a transaction
-    fn release_object_lock(
-        &self,
-        _object_id: &UnitsObjectId,
-        _transaction_hash: &[u8; 32],
-    ) -> Result<bool, StorageError> {
-        // Default implementation returns unimplemented
-        Err(StorageError::Unimplemented(
-            "Releasing object locks not implemented by this storage".to_string(),
-        ))
-    }
-
-    /// Check if a lock exists and get its information
-    fn get_object_lock_info(
-        &self,
-        _object_id: &UnitsObjectId,
-    ) -> Result<Option<LockInfo>, StorageError> {
-        // Default implementation returns unimplemented
-        Err(StorageError::Unimplemented(
-            "Getting object lock info not implemented by this storage".to_string(),
-        ))
-    }
-
-    /// Check if a transaction can acquire a lock on an object
-    fn can_acquire_object_lock(
-        &self,
-        _object_id: &UnitsObjectId,
-        _intent: AccessIntent,
-        _transaction_hash: &[u8; 32],
-    ) -> Result<bool, StorageError> {
-        // Default implementation returns unimplemented
-        Err(StorageError::Unimplemented(
-            "Checking object lock availability not implemented by this storage".to_string(),
-        ))
-    }
-
-    /// Release all locks held by a transaction
-    fn release_all_transaction_locks(
-        &self,
-        _transaction_hash: &[u8; 32],
-    ) -> Result<usize, StorageError> {
-        // Default implementation returns unimplemented
-        Err(StorageError::Unimplemented(
-            "Releasing transaction locks not implemented by this storage".to_string(),
-        ))
-    }
-
-    /// Get all locks held by a transaction
-    fn get_all_transaction_locks(
-        &self,
-        _transaction_hash: &[u8; 32],
-    ) -> UnitsStorageLockIterator<'_> {
-        // Default implementation returns an empty iterator
-        Box::new(EmptyLockIterator::<StorageError>::new())
-    }
-
-    /// Get all locks on an object
-    fn get_all_object_locks(&self, _object_id: &UnitsObjectId) -> UnitsStorageLockIterator<'_> {
-        // Default implementation returns an empty iterator
-        Box::new(EmptyLockIterator::<StorageError>::new())
-    }
-
-    /// Check for expired locks and release them
-    fn cleanup_expired_object_locks(&self) -> Result<usize, StorageError> {
-        // Default implementation returns unimplemented
-        Err(StorageError::Unimplemented(
-            "Cleaning up expired locks not implemented by this storage".to_string(),
-        ))
-    }
+    /// Get the lock manager for this storage
+    /// 
+    /// This method returns the lock manager used by this storage implementation.
+    /// Lock management is now separated from storage to follow the single responsibility principle.
+    fn lock_manager(&self) -> &dyn LockManagerTrait<Error = StorageError>;
 
     /// Get an object by its ID
     ///
@@ -278,7 +200,7 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
     ///
     /// # Returns
     /// Some(object) if found, None otherwise
-    fn get(&self, id: &UnitsObjectId) -> Result<Option<TokenizedObject>, StorageError>;
+    fn get(&self, id: &UnitsObjectId) -> Result<Option<UnitsObject>, StorageError>;
 
     /// Get an object at a specific historical slot
     ///
@@ -292,7 +214,7 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
         &self,
         id: &UnitsObjectId,
         slot: SlotNumber,
-    ) -> Result<Option<TokenizedObject>, StorageError>;
+    ) -> Result<Option<UnitsObject>, StorageError>;
 
     /// Get object state history between slots
     ///
@@ -308,7 +230,7 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
         id: &UnitsObjectId,
         start_slot: SlotNumber,
         end_slot: SlotNumber,
-    ) -> Result<HashMap<SlotNumber, TokenizedObject>, StorageError> {
+    ) -> Result<HashMap<SlotNumber, UnitsObject>, StorageError> {
         // Default implementation that uses get_proof_history and reconstructs objects
         let mut history = HashMap::new();
 
@@ -385,30 +307,30 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
     /// Store an object
     ///
     /// # Parameters
-    /// * `object` - The tokenized object to store
+    /// * `object` - The object to store
     /// * `transaction_hash` - Hash of the transaction that led to this update, if any
     ///
     /// # Returns
     /// The generated proof for this update
     fn set(
         &self,
-        object: &TokenizedObject,
+        object: &UnitsObject,
         transaction_hash: Option<[u8; 32]>,
-    ) -> Result<TokenizedObjectProof, StorageError>;
+    ) -> Result<UnitsObjectProof, StorageError>;
 
     /// Store multiple objects in a single transaction
     ///
     /// # Parameters
-    /// * `objects` - The tokenized objects to store
+    /// * `objects` - The objects to store
     /// * `transaction_hash` - Hash of the transaction that led to these updates
     ///
     /// # Returns
     /// A map of object IDs to their generated proofs
     fn set_batch(
         &self,
-        objects: &[TokenizedObject],
+        objects: &[UnitsObject],
         transaction_hash: [u8; 32],
-    ) -> Result<HashMap<UnitsObjectId, TokenizedObjectProof>, StorageError> {
+    ) -> Result<HashMap<UnitsObjectId, UnitsObjectProof>, StorageError> {
         // Default implementation that calls set() for each object
         let mut proofs = HashMap::new();
 
@@ -438,7 +360,7 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
         &self,
         id: &UnitsObjectId,
         transaction_hash: Option<[u8; 32]>,
-    ) -> Result<TokenizedObjectProof, StorageError>;
+    ) -> Result<UnitsObjectProof, StorageError>;
 
     /// Delete multiple objects in a single transaction
     ///
@@ -452,7 +374,7 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
         &self,
         ids: &[UnitsObjectId],
         transaction_hash: [u8; 32],
-    ) -> Result<HashMap<UnitsObjectId, TokenizedObjectProof>, StorageError> {
+    ) -> Result<HashMap<UnitsObjectId, UnitsObjectProof>, StorageError> {
         // Default implementation that calls delete() for each object
         let mut proofs = HashMap::new();
 
@@ -478,7 +400,7 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
     /// A transaction receipt containing all proofs
     fn execute_transaction_batch(
         &self,
-        objects_to_store: &[TokenizedObject],
+        objects_to_store: &[UnitsObject],
         objects_to_delete: &[UnitsObjectId],
         transaction_hash: [u8; 32],
         slot: SlotNumber,
@@ -752,26 +674,7 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
 // Instead, specific implementations of UnitsStorage will implement PersistentLockManager
 // This avoids the orphan rule issues
 
-/// Helper type for a lock iterator with StorageError
-pub type UnitsStorageLockIterator<'a> =
-    Box<dyn Iterator<Item = Result<LockInfo, StorageError>> + 'a>;
-
-/// Wrapper struct for empty lock iterator
-pub struct EmptyLockIterator<E>(std::marker::PhantomData<E>);
-
-impl<E> EmptyLockIterator<E> {
-    pub fn new() -> Self {
-        Self(std::marker::PhantomData)
-    }
-}
-
-impl<E> Iterator for EmptyLockIterator<E> {
-    type Item = Result<LockInfo, E>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        None
-    }
-}
+// Lock management moved to lock_manager.rs
 
 /// Iterator for traversing transaction receipts in storage
 pub trait UnitsReceiptIterator: Iterator<Item = Result<TransactionReceipt, StorageError>> {}

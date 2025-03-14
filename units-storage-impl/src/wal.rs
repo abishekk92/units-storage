@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use units_core::error::StorageError;
-use units_core::objects::TokenizedObject;
-use units_proofs::{StateProof, TokenizedObjectProof};
+use units_core::objects::UnitsObject;
+use units_proofs::{StateProof, UnitsObjectProof};
 
 /// Entry type in the WAL
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,8 +79,8 @@ impl UnitsWriteAheadLog for FileWriteAheadLog {
 
     fn record_update(
         &self,
-        object: &TokenizedObject,
-        proof: &TokenizedObjectProof,
+        object: &UnitsObject,
+        proof: &UnitsObjectProof,
         transaction_hash: Option<[u8; 32]>,
     ) -> Result<(), StorageError> {
         let mut file_guard = self
@@ -211,32 +211,32 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
     use units_core::id::UnitsObjectId;
-    use units_core::objects::{TokenType, TokenizedObject};
-    use units_proofs::proofs::current_slot;
+    use units_core::objects::{ObjectType, UnitsObject};
+    use units_proofs::SlotNumber;
 
     // Helper to create a test object
-    fn create_test_object() -> TokenizedObject {
+    fn create_test_object() -> UnitsObject {
         let id = UnitsObjectId::random();
-        let holder = UnitsObjectId::random();
-        let token_manager = UnitsObjectId::random();
+        let owner = UnitsObjectId::random();
 
-        TokenizedObject::new(
+        UnitsObject::new(
             id,
-            holder,
-            TokenType::Native,
-            token_manager,
-            vec![1, 2, 3, 4],
+            owner,
+            ObjectType::Data,
+            vec![],  // metadata
+            vec![1, 2, 3, 4], // data
         )
     }
 
     // Helper to create a test proof
-    fn create_test_proof() -> TokenizedObjectProof {
+    fn create_test_proof() -> UnitsObjectProof {
         let object_id = UnitsObjectId::random();
         let object_hash = [0u8; 32];
+        let current_slot = 1234u64; // Mock slot number for testing
 
-        TokenizedObjectProof {
+        UnitsObjectProof {
             object_id,
-            slot: current_slot(),
+            slot: current_slot,
             object_hash,
             prev_proof_hash: None,
             transaction_hash: None,
@@ -246,8 +246,10 @@ mod tests {
 
     // Helper to create a test state proof
     fn create_test_state_proof() -> StateProof {
+        let current_slot = 1234u64; // Mock slot number for testing
+        
         StateProof {
-            slot: current_slot(),
+            slot: current_slot,
             prev_state_proof_hash: None,
             object_ids: vec![UnitsObjectId::random()],
             proof_data: vec![9, 10, 11, 12],

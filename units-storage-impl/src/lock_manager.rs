@@ -6,6 +6,63 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(feature = "sqlite")]
 use sqlx::Row;
 
+/// LockManagerTrait defines the interface for managing locks in the UNITS system
+/// This trait is separated from storage concerns to follow the single responsibility principle
+pub trait LockManagerTrait {
+    type Error: Debug + std::fmt::Display;
+
+    /// Acquire a lock on an object for a transaction
+    fn acquire_object_lock(
+        &self,
+        object_id: &UnitsObjectId,
+        lock_type: LockType,
+        transaction_hash: &[u8; 32],
+        timeout_ms: Option<u64>,
+    ) -> Result<bool, Self::Error>;
+
+    /// Release a lock on an object for a transaction
+    fn release_object_lock(
+        &self,
+        object_id: &UnitsObjectId,
+        transaction_hash: &[u8; 32],
+    ) -> Result<bool, Self::Error>;
+
+    /// Check if a lock exists and get its information
+    fn get_object_lock_info(
+        &self,
+        object_id: &UnitsObjectId,
+    ) -> Result<Option<LockInfo>, Self::Error>;
+
+    /// Check if a transaction can acquire a lock on an object
+    fn can_acquire_object_lock(
+        &self,
+        object_id: &UnitsObjectId,
+        intent: AccessIntent,
+        transaction_hash: &[u8; 32],
+    ) -> Result<bool, Self::Error>;
+
+    /// Release all locks held by a transaction
+    fn release_all_transaction_locks(
+        &self,
+        transaction_hash: &[u8; 32],
+    ) -> Result<usize, Self::Error>;
+
+    /// Get all locks held by a transaction
+    fn get_all_transaction_locks(
+        &self,
+        transaction_hash: &[u8; 32],
+    ) -> Box<dyn Iterator<Item = Result<LockInfo, Self::Error>> + '_>;
+
+    /// Get all locks on an object
+    fn get_all_object_locks(
+        &self, 
+        object_id: &UnitsObjectId
+    ) -> Box<dyn Iterator<Item = Result<LockInfo, Self::Error>> + '_>;
+
+    /// Check for expired locks and release them
+    fn cleanup_expired_object_locks(&self) -> Result<usize, Self::Error>;
+}
+
 /// An empty iterator implementation for LockInfo
 pub struct EmptyLockIterator<E>(std::marker::PhantomData<E>);
 
@@ -262,10 +319,10 @@ impl SqliteLockManager {
 }
 
 #[cfg(feature = "sqlite")]
-impl PersistentLockManager for SqliteLockManager {
+impl LockManagerTrait for SqliteLockManager {
     type Error = StorageError;
 
-    fn acquire_lock(
+    fn acquire_object_lock(
         &self,
         object_id: &UnitsObjectId,
         lock_type: LockType,
@@ -308,7 +365,7 @@ impl PersistentLockManager for SqliteLockManager {
         })
     }
 
-    fn release_lock(
+    fn release_object_lock(
         &self,
         object_id: &UnitsObjectId,
         transaction_hash: &[u8; 32],
@@ -330,7 +387,7 @@ impl PersistentLockManager for SqliteLockManager {
         })
     }
 
-    fn get_lock_info(&self, object_id: &UnitsObjectId) -> Result<Option<LockInfo>, Self::Error> {
+    fn get_object_lock_info(&self, object_id: &UnitsObjectId) -> Result<Option<LockInfo>, Self::Error> {
         self.rt.block_on(async {
             // First check if there's an expired lock that needs to be cleaned up
             let cleaned_up = self.check_and_cleanup_expired_lock(object_id).await?;
@@ -377,7 +434,7 @@ impl PersistentLockManager for SqliteLockManager {
         })
     }
 
-    fn can_acquire_lock(
+    fn can_acquire_object_lock(
         &self,
         object_id: &UnitsObjectId,
         intent: AccessIntent,
@@ -401,7 +458,7 @@ impl PersistentLockManager for SqliteLockManager {
         })
     }
 
-    fn release_transaction_locks(&self, transaction_hash: &[u8; 32]) -> Result<usize, Self::Error> {
+    fn release_all_transaction_locks(&self, transaction_hash: &[u8; 32]) -> Result<usize, Self::Error> {
         self.rt.block_on(async {
             // Release all locks held by this transaction
             let result = sqlx::query(
@@ -419,10 +476,10 @@ impl PersistentLockManager for SqliteLockManager {
         })
     }
 
-    fn get_transaction_locks(
+    fn get_all_transaction_locks(
         &self,
         transaction_hash: &[u8; 32],
-    ) -> Box<dyn UnitsLockIterator<Self::Error> + '_> {
+    ) -> Box<dyn Iterator<Item = Result<LockInfo, Self::Error>> + '_> {
         // Create a Vec to hold all the locks
         let locks = self.rt.block_on(async {
             let rows = sqlx::query(
@@ -481,7 +538,7 @@ impl PersistentLockManager for SqliteLockManager {
         Box::new(LockInfoVecIterator(locks.into_iter()))
     }
 
-    fn get_object_locks(&self, object_id: &UnitsObjectId) -> Box<dyn UnitsLockIterator<Self::Error> + '_> {
+    fn get_all_object_locks(&self, object_id: &UnitsObjectId) -> Box<dyn Iterator<Item = Result<LockInfo, Self::Error>> + '_> {
         // First check if there's an expired lock that needs to be cleaned up
         let cleanup_result = self.rt.block_on(async {
             self.check_and_cleanup_expired_lock(object_id).await
@@ -544,7 +601,7 @@ impl PersistentLockManager for SqliteLockManager {
         Box::new(LockInfoVecIterator(lock_info.into_iter()))
     }
 
-    fn cleanup_expired_locks(&self) -> Result<usize, Self::Error> {
+    fn cleanup_expired_object_locks(&self) -> Result<usize, Self::Error> {
         self.rt.block_on(async {
             let now = current_time_secs();
 
@@ -750,10 +807,10 @@ impl RocksDbLockManager {
 }
 
 #[cfg(feature = "rocksdb")]
-impl PersistentLockManager for RocksDbLockManager {
+impl LockManagerTrait for RocksDbLockManager {
     type Error = StorageError;
 
-    fn acquire_lock(
+    fn acquire_object_lock(
         &self,
         object_id: &UnitsObjectId,
         lock_type: LockType,
@@ -812,7 +869,7 @@ impl PersistentLockManager for RocksDbLockManager {
         Ok(true)
     }
 
-    fn release_lock(
+    fn release_object_lock(
         &self,
         object_id: &UnitsObjectId,
         transaction_hash: &[u8; 32],
@@ -858,7 +915,7 @@ impl PersistentLockManager for RocksDbLockManager {
         }
     }
 
-    fn get_lock_info(&self, object_id: &UnitsObjectId) -> Result<Option<LockInfo>, Self::Error> {
+    fn get_object_lock_info(&self, object_id: &UnitsObjectId) -> Result<Option<LockInfo>, Self::Error> {
         // First check if there's an expired lock that needs to be cleaned up
         let cleaned_up = self.check_and_cleanup_expired_lock(object_id)?;
         if cleaned_up {
@@ -887,7 +944,7 @@ impl PersistentLockManager for RocksDbLockManager {
         }
     }
 
-    fn can_acquire_lock(
+    fn can_acquire_object_lock(
         &self,
         object_id: &UnitsObjectId,
         intent: AccessIntent,
@@ -909,7 +966,7 @@ impl PersistentLockManager for RocksDbLockManager {
         }
     }
 
-    fn release_transaction_locks(&self, transaction_hash: &[u8; 32]) -> Result<usize, Self::Error> {
+    fn release_all_transaction_locks(&self, transaction_hash: &[u8; 32]) -> Result<usize, Self::Error> {
         // Get the lock CF
         let cf = match self.db.cf_handle(&self.locks_cf) {
             Some(cf) => cf,
@@ -979,10 +1036,10 @@ impl PersistentLockManager for RocksDbLockManager {
         Ok(count)
     }
 
-    fn get_transaction_locks(
+    fn get_all_transaction_locks(
         &self,
         transaction_hash: &[u8; 32],
-    ) -> Box<dyn UnitsLockIterator<Self::Error> + '_> {
+    ) -> Box<dyn Iterator<Item = Result<LockInfo, Self::Error>> + '_> {
         // To avoid lifetime issues, let's load all locks into a Vec first
         let mut locks = Vec::new();
 
@@ -1059,7 +1116,7 @@ impl PersistentLockManager for RocksDbLockManager {
         }
     }
 
-    fn get_object_locks(&self, object_id: &UnitsObjectId) -> Box<dyn UnitsLockIterator<Self::Error> + '_> {
+    fn get_all_object_locks(&self, object_id: &UnitsObjectId) -> Box<dyn Iterator<Item = Result<LockInfo, Self::Error>> + '_> {
         // First check if there's an expired lock that needs to be cleaned up
         match self.check_and_cleanup_expired_lock(object_id) {
             Err(e) => {
@@ -1105,7 +1162,7 @@ impl PersistentLockManager for RocksDbLockManager {
         }
     }
 
-    fn cleanup_expired_locks(&self) -> Result<usize, Self::Error> {
+    fn cleanup_expired_object_locks(&self) -> Result<usize, Self::Error> {
         // Get the lock CF
         let cf = match self.db.cf_handle(&self.locks_cf) {
             Some(cf) => cf,
@@ -1185,3 +1242,103 @@ impl Debug for RocksDbLockManager {
             .finish()
     }
 }
+
+// Adapter to wrap LockManagerTrait implementations for PersistentLockManager compatibility
+pub struct LockManagerAdapter<T: LockManagerTrait<Error = StorageError>> {
+    inner: T,
+}
+
+impl<T: LockManagerTrait<Error = StorageError>> Debug for LockManagerAdapter<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LockManagerAdapter")
+            .finish()
+    }
+}
+
+impl<T: LockManagerTrait<Error = StorageError>> LockManagerAdapter<T> {
+    pub fn new(inner: T) -> Self {
+        Self { inner }
+    }
+    
+    pub fn inner(&self) -> &T {
+        &self.inner
+    }
+}
+
+// Implement PersistentLockManager for the adapter
+impl<T: LockManagerTrait<Error = StorageError>> PersistentLockManager for LockManagerAdapter<T> {
+    type Error = StorageError;
+
+    fn acquire_lock(
+        &self,
+        object_id: &UnitsObjectId,
+        lock_type: LockType,
+        transaction_hash: &[u8; 32],
+        timeout_ms: Option<u64>,
+    ) -> Result<bool, Self::Error> {
+        self.inner.acquire_object_lock(object_id, lock_type, transaction_hash, timeout_ms)
+    }
+
+    fn release_lock(
+        &self,
+        object_id: &UnitsObjectId,
+        transaction_hash: &[u8; 32],
+    ) -> Result<bool, Self::Error> {
+        self.inner.release_object_lock(object_id, transaction_hash)
+    }
+
+    fn get_lock_info(&self, object_id: &UnitsObjectId) -> Result<Option<LockInfo>, Self::Error> {
+        self.inner.get_object_lock_info(object_id)
+    }
+
+    fn can_acquire_lock(
+        &self,
+        object_id: &UnitsObjectId,
+        intent: AccessIntent,
+        transaction_hash: &[u8; 32],
+    ) -> Result<bool, Self::Error> {
+        self.inner.can_acquire_object_lock(object_id, intent, transaction_hash)
+    }
+
+    fn release_transaction_locks(&self, transaction_hash: &[u8; 32]) -> Result<usize, Self::Error> {
+        self.inner.release_all_transaction_locks(transaction_hash)
+    }
+
+    fn get_transaction_locks(
+        &self,
+        transaction_hash: &[u8; 32],
+    ) -> Box<dyn UnitsLockIterator<Self::Error> + '_> {
+        // Convert our Iterator to UnitsLockIterator
+        let inner_iter = self.inner.get_all_transaction_locks(transaction_hash);
+        Box::new(LockIteratorAdapter(inner_iter))
+    }
+
+    fn get_object_locks(&self, object_id: &UnitsObjectId) -> Box<dyn UnitsLockIterator<Self::Error> + '_> {
+        // Convert our Iterator to UnitsLockIterator
+        let inner_iter = self.inner.get_all_object_locks(object_id);
+        Box::new(LockIteratorAdapter(inner_iter))
+    }
+
+    fn cleanup_expired_locks(&self) -> Result<usize, Self::Error> {
+        self.inner.cleanup_expired_object_locks()
+    }
+}
+
+// Adapter to convert our generic Iterator to UnitsLockIterator
+struct LockIteratorAdapter<I>(I);
+
+impl<I> Iterator for LockIteratorAdapter<I>
+where
+    I: Iterator<Item = Result<LockInfo, StorageError>>,
+{
+    type Item = Result<LockInfo, StorageError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next()
+    }
+}
+
+impl<I> UnitsLockIterator<StorageError> for LockIteratorAdapter<I>
+where
+    I: Iterator<Item = Result<LockInfo, StorageError>>,
+{}

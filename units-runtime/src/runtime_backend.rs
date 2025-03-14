@@ -2,14 +2,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use units_core::id::UnitsObjectId;
-use units_core::objects::TokenizedObject;
+use units_core::objects::UnitsObject;
 use units_core::transaction::{Instruction, RuntimeType, TransactionHash};
 
 /// Result type for instruction execution
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum InstructionResult {
     /// Success result with a map of updated objects
-    Success(HashMap<UnitsObjectId, TokenizedObject>),
+    Success(HashMap<UnitsObjectId, UnitsObject>),
     /// Error with message
     Error(String),
 }
@@ -21,7 +21,7 @@ pub struct InstructionContext<'a> {
     pub transaction_hash: &'a TransactionHash,
 
     /// The objects that this instruction has access to (read or write)
-    pub objects: HashMap<UnitsObjectId, TokenizedObject>,
+    pub objects: HashMap<UnitsObjectId, UnitsObject>,
 
     /// Additional parameters available to the instruction
     pub parameters: HashMap<String, String>,
@@ -41,12 +41,12 @@ pub trait RuntimeBackend: Send + Sync {
     /// Get the runtime type this backend handles
     fn runtime_type(&self) -> RuntimeType;
 
-    /// Execute a program stored in a TokenizedObject
+    /// Execute a program stored in a UnitsObject
     ///
     /// This method handles executing a code object with the given entrypoint.
     fn execute_program<'a>(
         &self,
-        program: &TokenizedObject,
+        program: &UnitsObject,
         entrypoint: &str,
         args: &[u8],
         context: InstructionContext<'a>,
@@ -116,7 +116,7 @@ impl RuntimeBackendManager {
         program_id: &UnitsObjectId,
         instruction: &Instruction,
         mut context: InstructionContext<'a>,
-    ) -> Result<HashMap<UnitsObjectId, TokenizedObject>, ExecutionError> {
+    ) -> Result<HashMap<UnitsObjectId, UnitsObject>, ExecutionError> {
         // Find the program object in the context
         let program = context
             .objects
@@ -197,7 +197,7 @@ impl RuntimeBackend for WasmRuntimeBackend {
 
     fn execute_program<'a>(
         &self,
-        program: &TokenizedObject,
+        program: &UnitsObject,
         entrypoint: &str,
         args: &[u8],
         _context: InstructionContext<'a>,
@@ -254,7 +254,7 @@ impl RuntimeBackend for EbpfRuntimeBackend {
 
     fn execute_program<'a>(
         &self,
-        program: &TokenizedObject,
+        program: &UnitsObject,
         entrypoint: &str,
         args: &[u8],
         _context: InstructionContext<'a>,

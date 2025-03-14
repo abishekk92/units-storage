@@ -18,7 +18,7 @@ use wasmtime::{Linker, Trap, Val, WasmParams, WasmResults};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder};
 
 use units_core::id::UnitsObjectId;
-use units_core::objects::TokenizedObject;
+use units_core::objects::UnitsObject;
 use units_core::transaction::{Instruction, RuntimeType, TransactionHash};
 
 use crate::host_environment::{create_standard_host_environment, StandardHostEnvironment};
@@ -180,14 +180,13 @@ mod host_funcs {
         let memory = wasm_memory::get_memory(&caller)?;
         let json_bytes = wasm_memory::read_memory(&memory, &caller, ptr, len)?;
 
-        // Parse JSON into a map of TokenizedObjects
+        // Parse JSON into a map of UnitsObjects
         let json_str = match std::str::from_utf8(&json_bytes) {
             Ok(s) => s,
             Err(_) => return Err(Trap::new("Invalid UTF-8 in objects JSON")),
         };
 
-        let objects: HashMap<UnitsObjectId, TokenizedObject> = match serde_json::from_str(json_str)
-        {
+        let objects: HashMap<UnitsObjectId, UnitsObject> = match serde_json::from_str(json_str) {
             Ok(objs) => objs,
             Err(e) => return Err(Trap::new(format!("Invalid objects JSON: {}", e))),
         };
@@ -275,7 +274,7 @@ impl WasmtimeRuntimeBackend {
         wasm_bytes: &[u8],
         entrypoint: &str,
         host_environment: Arc<Mutex<dyn HostEnvironment>>,
-    ) -> Result<HashMap<UnitsObjectId, TokenizedObject>> {
+    ) -> Result<HashMap<UnitsObjectId, UnitsObject>> {
         // Compile the WebAssembly module
         debug!("Compiling WebAssembly module ({} bytes)", wasm_bytes.len());
         let module = Module::from_binary(&self.engine, wasm_bytes)?;
@@ -541,7 +540,7 @@ impl RuntimeBackend for WasmtimeRuntimeBackend {
 
     fn execute_program<'a>(
         &self,
-        program: &TokenizedObject,
+        program: &UnitsObject,
         entrypoint: &str,
         args: &[u8],
         context: InstructionContext<'a>,
@@ -560,7 +559,9 @@ impl RuntimeBackend for WasmtimeRuntimeBackend {
         };
 
         // Create a host environment for this program execution
-        let program_id = context.program_id.expect("Program ID must be provided for program execution");
+        let program_id = context
+            .program_id
+            .expect("Program ID must be provided for program execution");
         let host_env = match StandardHostEnvironment::for_program(
             program_id,
             args,
@@ -711,7 +712,7 @@ pub fn create_wasmtime_backend() -> Arc<dyn RuntimeBackend> {
 /// use serde::{Deserialize, Serialize};
 ///
 /// #[derive(Serialize, Deserialize)]
-/// struct TokenizedObject {
+/// struct UnitsObject {
 ///     id: [u8; 32],  // Direct binary representation
 ///     holder: [u8; 32],
 ///     token_type: u8,
@@ -737,7 +738,7 @@ pub fn create_wasmtime_backend() -> Arc<dyn RuntimeBackend> {
 ///     };
 ///
 ///     // Deserialize objects using JSON
-///     let objects: HashMap<[u8; 32], TokenizedObject> = unsafe {
+///     let objects: HashMap<[u8; 32], UnitsObject> = unsafe {
 ///         let slice = std::slice::from_raw_parts(
 ///             objects_data_ptr as *const u8,
 ///             objects_data_len as usize
@@ -915,7 +916,7 @@ mod tests {
         let code_object_id = UnitsObjectId::unique_id_for_tests();
 
         // Create a test code object
-        let code_object = TokenizedObject::create_code_object(
+        let code_object = UnitsObject::create_code_object(
             code_object_id,
             UnitsObjectId::unique_id_for_tests(),
             TokenType::Native,
@@ -935,7 +936,7 @@ mod tests {
 
         // Create a test data object
         let data_object_id = UnitsObjectId::unique_id_for_tests();
-        let data_object = TokenizedObject {
+        let data_object = UnitsObject {
             id: data_object_id,
             holder: UnitsObjectId::unique_id_for_tests(),
             token_type: TokenType::Native,
@@ -1009,7 +1010,7 @@ mod tests {
         let code_object_id = UnitsObjectId::unique_id_for_tests();
 
         // Create a test code object
-        let code_object = TokenizedObject::create_code_object(
+        let code_object = UnitsObject::create_code_object(
             code_object_id,
             UnitsObjectId::unique_id_for_tests(),
             TokenType::Native,

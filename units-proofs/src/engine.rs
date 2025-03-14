@@ -1,17 +1,17 @@
 use serde::{Deserialize, Serialize};
 use units_core::error::StorageError;
 use units_core::id::UnitsObjectId;
-use units_core::objects::TokenizedObject;
+use units_core::objects::UnitsObject;
 
 /// Slot number type (represents points in time)
 pub type SlotNumber = u64;
 
-/// A cryptographic proof for a tokenized object
+/// A cryptographic proof for a UNITS object
 ///
-/// This proof commits to the state of a TokenizedObject at a particular slot,
+/// This proof commits to the state of a UnitsObject at a particular slot,
 /// and optionally links to a previous proof to form a chain of state changes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TokenizedObjectProof {
+pub struct UnitsObjectProof {
     /// The UnitsObjectId this proof is for
     pub object_id: UnitsObjectId,
 
@@ -33,11 +33,11 @@ pub struct TokenizedObjectProof {
     pub proof_data: Vec<u8>,
 }
 
-impl TokenizedObjectProof {
-    /// Creates a new TokenizedObjectProof with the given data
+impl UnitsObjectProof {
+    /// Creates a new UnitsObjectProof with the given data
     pub fn new(
         proof_data: Vec<u8>,
-        prev_proof: Option<&TokenizedObjectProof>,
+        prev_proof: Option<&UnitsObjectProof>,
         transaction_hash: Option<[u8; 32]>,
     ) -> Self {
         let prev_proof_hash = prev_proof.map(|p| p.hash());
@@ -175,13 +175,13 @@ pub enum VerificationResult {
 /// - `verify_proof_chain`: Verifies a single link in a chain between two adjacent proofs
 /// - `verify_proof_history`: Verifies an entire history of proofs for optimal performance
 pub trait ProofEngine {
-    /// Generate a cryptographic proof for a tokenized object
+    /// Generate a cryptographic proof for a UNITS object
     ///
     /// This creates a proof that commits to the current state of the object.
     /// The proof can later be verified to ensure the object has not been modified.
     ///
     /// # Parameters
-    /// * `object` - The tokenized object to generate a proof for
+    /// * `object` - The UnitsObject to generate a proof for
     /// * `prev_proof` - The previous proof for this object, if any
     /// * `transaction_hash` - Hash of the transaction that led to this state change, if any
     ///
@@ -190,23 +190,23 @@ pub trait ProofEngine {
     /// and links to its previous state through the prev_proof_hash
     fn generate_object_proof(
         &self,
-        object: &TokenizedObject,
-        prev_proof: Option<&TokenizedObjectProof>,
+        object: &UnitsObject,
+        prev_proof: Option<&UnitsObjectProof>,
         transaction_hash: Option<[u8; 32]>,
-    ) -> Result<TokenizedObjectProof, StorageError>;
+    ) -> Result<UnitsObjectProof, StorageError>;
 
     /// Verify that a proof correctly commits to an object's state
     ///
     /// # Parameters
-    /// * `object` - The tokenized object to verify the proof against
+    /// * `object` - The UnitsObject to verify the proof against
     /// * `proof` - The proof to verify
     ///
     /// # Returns
     /// `true` if the proof is valid for the given object, `false` otherwise
     fn verify_object_proof(
         &self,
-        object: &TokenizedObject,
-        proof: &TokenizedObjectProof,
+        object: &UnitsObject,
+        proof: &UnitsObjectProof,
     ) -> Result<bool, StorageError>;
 
     /// Verify two adjacent proofs in a chain
@@ -216,7 +216,7 @@ pub trait ProofEngine {
     /// For verifying an entire chain of proofs, use `verify_proof_history` instead.
     ///
     /// # Parameters
-    /// * `object` - The current tokenized object
+    /// * `object` - The current UnitsObject
     /// * `proof` - The current proof for the object
     /// * `prev_proof` - The previous proof in the chain
     ///
@@ -224,9 +224,9 @@ pub trait ProofEngine {
     /// `true` if the link between proofs is valid, `false` otherwise
     fn verify_proof_chain(
         &self,
-        object: &TokenizedObject,
-        proof: &TokenizedObjectProof,
-        prev_proof: &TokenizedObjectProof,
+        object: &UnitsObject,
+        proof: &UnitsObjectProof,
+        prev_proof: &UnitsObjectProof,
     ) -> Result<bool, StorageError>;
 
     /// Generate a state proof from a collection of object proofs
@@ -243,7 +243,7 @@ pub trait ProofEngine {
     /// A cryptographic proof that commits to the state of all provided objects
     fn generate_state_proof(
         &self,
-        object_proofs: &[(UnitsObjectId, TokenizedObjectProof)],
+        object_proofs: &[(UnitsObjectId, UnitsObjectProof)],
         prev_state_proof: Option<&StateProof>,
         slot: SlotNumber,
     ) -> Result<StateProof, StorageError>;
@@ -259,7 +259,7 @@ pub trait ProofEngine {
     fn verify_state_proof(
         &self,
         state_proof: &StateProof,
-        object_proofs: &[(UnitsObjectId, TokenizedObjectProof)],
+        object_proofs: &[(UnitsObjectId, UnitsObjectProof)],
     ) -> Result<bool, StorageError>;
 
     /// Verify a chain of state proofs
@@ -298,8 +298,8 @@ pub trait ProofEngine {
     /// A VerificationResult indicating whether the proof chain is valid
     fn verify_proof_history(
         &self,
-        object_states: &[(SlotNumber, TokenizedObject)],
-        proofs: &[(SlotNumber, TokenizedObjectProof)],
+        object_states: &[(SlotNumber, UnitsObject)],
+        proofs: &[(SlotNumber, UnitsObjectProof)],
     ) -> VerificationResult {
         // Default implementation delegates to the LatticeProofEngine implementation
         if object_states.is_empty() || proofs.is_empty() {

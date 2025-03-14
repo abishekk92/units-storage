@@ -12,7 +12,7 @@ use log::{debug, error, info, warn};
 use serde_json;
 
 use units_core::id::UnitsObjectId;
-use units_core::objects::TokenizedObject;
+use units_core::objects::UnitsObject;
 use units_core::transaction::TransactionHash;
 
 /// A trait that abstracts the host machine functionalities for runtime backends
@@ -33,7 +33,7 @@ pub trait HostEnvironment: Send + Sync {
     /// Returns the number of objects successfully stored
     fn store_modified_objects(
         &mut self,
-        objects: HashMap<UnitsObjectId, TokenizedObject>,
+        objects: HashMap<UnitsObjectId, UnitsObject>,
     ) -> Result<usize>;
 
     /// Get the serialized objects data accessible to the guest program
@@ -52,22 +52,22 @@ pub trait HostEnvironment: Send + Sync {
     fn get_instruction_params(&self) -> &[u8];
 
     /// Get the raw objects that this environment has access to
-    fn get_objects(&self) -> &HashMap<UnitsObjectId, TokenizedObject>;
+    fn get_objects(&self) -> &HashMap<UnitsObjectId, UnitsObject>;
 
     /// Get mutable access to the objects this environment has access to
-    fn get_objects_mut(&mut self) -> &mut HashMap<UnitsObjectId, TokenizedObject>;
+    fn get_objects_mut(&mut self) -> &mut HashMap<UnitsObjectId, UnitsObject>;
 
     /// Get the object modifications that have been stored during execution
-    fn get_modified_objects(&self) -> &HashMap<UnitsObjectId, TokenizedObject>;
+    fn get_modified_objects(&self) -> &HashMap<UnitsObjectId, UnitsObject>;
 }
 
 /// Standard implementation of the host environment for all runtime backends
 pub struct StandardHostEnvironment {
     /// Objects accessible to the guest program
-    objects: HashMap<UnitsObjectId, TokenizedObject>,
+    objects: HashMap<UnitsObjectId, UnitsObject>,
 
     /// Objects modified by the guest program
-    modified_objects: HashMap<UnitsObjectId, TokenizedObject>,
+    modified_objects: HashMap<UnitsObjectId, UnitsObject>,
 
     /// Transaction hash for the current execution
     transaction_hash: [u8; 32],
@@ -88,7 +88,7 @@ pub struct StandardHostEnvironment {
 impl StandardHostEnvironment {
     /// Create a new host environment with the given objects and parameters
     pub fn new(
-        objects: HashMap<UnitsObjectId, TokenizedObject>,
+        objects: HashMap<UnitsObjectId, UnitsObject>,
         parameters: &HashMap<String, String>,
         transaction_hash: [u8; 32],
         program_id: Option<UnitsObjectId>,
@@ -119,7 +119,7 @@ impl StandardHostEnvironment {
     pub fn for_program(
         program_id: UnitsObjectId,
         args: &[u8],
-        objects: HashMap<UnitsObjectId, TokenizedObject>,
+        objects: HashMap<UnitsObjectId, UnitsObject>,
         parameters: &HashMap<String, String>,
         transaction_hash: &TransactionHash,
     ) -> Result<Self> {
@@ -146,7 +146,7 @@ impl HostEnvironment for StandardHostEnvironment {
 
     fn store_modified_objects(
         &mut self,
-        objects: HashMap<UnitsObjectId, TokenizedObject>,
+        objects: HashMap<UnitsObjectId, UnitsObject>,
     ) -> Result<usize> {
         let mut count = 0;
 
@@ -158,7 +158,10 @@ impl HostEnvironment for StandardHostEnvironment {
 
             // Check that the object exists in the context
             if !self.objects.contains_key(object.id()) {
-                return Err(anyhow!("Cannot modify non-existent object: {}", object.id()));
+                return Err(anyhow!(
+                    "Cannot modify non-existent object: {}",
+                    object.id()
+                ));
             }
 
             // Store the modified object
@@ -190,22 +193,22 @@ impl HostEnvironment for StandardHostEnvironment {
         &self.instruction_params
     }
 
-    fn get_objects(&self) -> &HashMap<UnitsObjectId, TokenizedObject> {
+    fn get_objects(&self) -> &HashMap<UnitsObjectId, UnitsObject> {
         &self.objects
     }
 
-    fn get_objects_mut(&mut self) -> &mut HashMap<UnitsObjectId, TokenizedObject> {
+    fn get_objects_mut(&mut self) -> &mut HashMap<UnitsObjectId, UnitsObject> {
         &mut self.objects
     }
 
-    fn get_modified_objects(&self) -> &HashMap<UnitsObjectId, TokenizedObject> {
+    fn get_modified_objects(&self) -> &HashMap<UnitsObjectId, UnitsObject> {
         &self.modified_objects
     }
 }
 
 /// Factory function to create a standard host environment
 pub fn create_standard_host_environment(
-    objects: HashMap<UnitsObjectId, TokenizedObject>,
+    objects: HashMap<UnitsObjectId, UnitsObject>,
     parameters: &HashMap<String, String>,
     transaction_hash: [u8; 32],
     program_id: Option<UnitsObjectId>,

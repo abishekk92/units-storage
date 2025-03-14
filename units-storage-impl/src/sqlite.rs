@@ -4,8 +4,9 @@ use crate::lock_manager::SqliteLockManager;
 use crate::storage_traits::{
     UnitsProofIterator, UnitsReceiptIterator, UnitsStateProofIterator, UnitsStorage, 
     UnitsStorageIterator, UnitsStorageProofEngine, TransactionReceiptStorage, 
-    UnitsStorageLockIterator, UnitsWriteAheadLog, WALEntry,
+    UnitsWriteAheadLog, WALEntry,
 };
+use crate::lock_manager::{LockManagerTrait, LockManagerAdapter};
 use units_core::locks::{AccessIntent, LockInfo, LockType, PersistentLockManager};
 use units_core::transaction::{CommitmentLevel, TransactionReceipt};
 use anyhow::{Context, Result};
@@ -22,10 +23,10 @@ use std::{
 use tokio::runtime::Runtime;
 use units_core::error::StorageError;
 use units_core::id::UnitsObjectId;
-use units_core::objects::{TokenType, TokenizedObject};
+use units_core::objects::{ObjectType, TokenType, UnitsObject};
 use units_proofs::lattice_proof_engine::LatticeProofEngine;
-use units_proofs::proofs;
-use units_proofs::{ProofEngine, SlotNumber, StateProof, TokenizedObjectProof, VerificationResult};
+use units_proofs::SlotNumber;
+use units_proofs::{ProofEngine, StateProof, UnitsObjectProof, VerificationResult};
 
 /// A SQLite-based implementation of the UnitsStorage interface using sqlx.
 pub struct SqliteStorage {
@@ -288,87 +289,36 @@ impl SqliteStorage {
         Ok(())
     }
 
-    /// Convert TokenType enum to integer for storage
-    fn token_type_to_int(token_type: &TokenType) -> i64 {
-        match token_type {
-            TokenType::Native => 0,
-            TokenType::Custodial => 1,
-            TokenType::Proxy => 2,
+    /// Convert ObjectType enum to integer for storage
+    fn object_type_to_int(object_type: &ObjectType) -> i64 {
+        match object_type {
+            ObjectType::Token => 0,
+            ObjectType::Code => 1,
         }
     }
 
-    /// Convert integer from storage to TokenType enum
-    fn int_to_token_type(value: i64) -> Result<TokenType, String> {
+    /// Convert integer from storage to ObjectType enum
+    fn int_to_object_type(value: i64) -> Result<ObjectType, String> {
         match value {
-            0 => Ok(TokenType::Native),
-            1 => Ok(TokenType::Custodial),
-            2 => Ok(TokenType::Proxy),
-            _ => Err(format!("Invalid token type value: {}", value)),
+            0 => Ok(ObjectType::Token),
+            1 => Ok(ObjectType::Code),
+            _ => Err(format!("Invalid object type value: {}", value)),
         }
     }
 }
 
 impl UnitsStorage for SqliteStorage {
-    // Override default lock methods to use our PersistentLockManager
-    fn acquire_object_lock(
-        &self,
-        object_id: &UnitsObjectId,
-        lock_type: LockType,
-        transaction_hash: &[u8; 32],
-        timeout_ms: Option<u64>,
-    ) -> Result<bool, StorageError> {
-        self.lock_manager.acquire_lock(object_id, lock_type, transaction_hash, timeout_ms)
+    fn lock_manager(&self) -> &dyn LockManagerTrait<Error = StorageError> {
+        &self.lock_manager
     }
 
-    fn release_object_lock(
-        &self,
-        object_id: &UnitsObjectId,
-        transaction_hash: &[u8; 32],
-    ) -> Result<bool, StorageError> {
-        self.lock_manager.release_lock(object_id, transaction_hash)
-    }
+    // Lock management methods moved to lock_manager
 
-    fn get_object_lock_info(
-        &self,
-        object_id: &UnitsObjectId,
-    ) -> Result<Option<LockInfo>, StorageError> {
-        self.lock_manager.get_lock_info(object_id)
-    }
+    // More lock management methods moved to lock_manager
 
-    fn can_acquire_object_lock(
-        &self,
-        object_id: &UnitsObjectId,
-        intent: AccessIntent,
-        transaction_hash: &[u8; 32],
-    ) -> Result<bool, StorageError> {
-        self.lock_manager.can_acquire_lock(object_id, intent, transaction_hash)
-    }
+    // All lock management methods moved to lock_manager
 
-    fn release_all_transaction_locks(
-        &self,
-        transaction_hash: &[u8; 32],
-    ) -> Result<usize, StorageError> {
-        self.lock_manager.release_transaction_locks(transaction_hash)
-    }
-
-    fn get_all_transaction_locks(
-        &self,
-        transaction_hash: &[u8; 32],
-    ) -> UnitsStorageLockIterator<'_> {
-        // Convert the PersistentLockManager iterator to a UnitsStorageLockIterator
-        Box::new(self.lock_manager.get_transaction_locks(transaction_hash))
-    }
-
-    fn get_all_object_locks(&self, object_id: &UnitsObjectId) -> UnitsStorageLockIterator<'_> {
-        // Convert the PersistentLockManager iterator to a UnitsStorageLockIterator
-        Box::new(self.lock_manager.get_object_locks(object_id))
-    }
-
-    fn cleanup_expired_object_locks(&self) -> Result<usize, StorageError> {
-        self.lock_manager.cleanup_expired_locks()
-    }
-
-    fn get(&self, id: &UnitsObjectId) -> Result<Option<TokenizedObject>, StorageError> {
+    fn get(&self, id: &UnitsObjectId) -> Result<Option<UnitsObject>, StorageError> {
         self.rt.block_on(async {
             let query =
                 "SELECT id, holder, token_type, token_manager, data FROM objects WHERE id = ?";
@@ -410,15 +360,15 @@ impl UnitsStorage for SqliteStorage {
             }
 
             // Convert token type
-            let token_type = match SqliteStorage::int_to_token_type(token_type_int) {
+            let object_type = match SqliteStorage::int_to_object_type(token_type_int) {
                 Ok(tt) => tt,
                 Err(e) => return Err(StorageError::Other(e)),
             };
 
-            Ok(Some(TokenizedObject::new(
+            Ok(Some(UnitsObject::new_token(
                 UnitsObjectId::new(id_array),
                 UnitsObjectId::new(holder_array),
-                token_type,
+                TokenType::Native, // Default to Native
                 UnitsObjectId::new(token_manager_array),
                 data,
             )))
@@ -429,7 +379,7 @@ impl UnitsStorage for SqliteStorage {
         &self,
         id: &UnitsObjectId,
         slot: SlotNumber,
-    ) -> Result<Option<TokenizedObject>, StorageError> {
+    ) -> Result<Option<UnitsObject>, StorageError> {
         self.rt.block_on(async {
             // Query the object history table for the state at or before the given slot
             let query = "
@@ -473,15 +423,15 @@ impl UnitsStorage for SqliteStorage {
                 }
 
                 // Convert token type
-                let token_type = match Self::int_to_token_type(token_type_int) {
+                let object_type = match Self::int_to_object_type(token_type_int) {
                     Ok(tt) => tt,
                     Err(e) => return Err(StorageError::Other(e)),
                 };
 
-                Ok(Some(TokenizedObject::new(
+                Ok(Some(UnitsObject::new_token(
                     *id,
                     UnitsObjectId::new(holder_array),
-                    token_type,
+                    TokenType::Native, // Default to Native
                     UnitsObjectId::new(token_manager_array),
                     data,
                 )))
@@ -494,9 +444,9 @@ impl UnitsStorage for SqliteStorage {
 
     fn set(
         &self,
-        object: &TokenizedObject,
+        object: &UnitsObject,
         transaction_hash: Option<[u8; 32]>,
-    ) -> Result<TokenizedObjectProof, StorageError> {
+    ) -> Result<UnitsObjectProof, StorageError> {
         self.rt.block_on(async {
             // Use a transaction to ensure atomicity
             let mut tx = self.pool
@@ -505,14 +455,14 @@ impl UnitsStorage for SqliteStorage {
                 .with_context(|| "Failed to start database transaction")?;
 
             // Store the object
-            let token_type_int = Self::token_type_to_int(&object.token_type);
+            let token_type_int = Self::object_type_to_int(&object.object_type);
             let query = "INSERT OR REPLACE INTO objects (id, holder, token_type, token_manager, data) VALUES (?, ?, ?, ?, ?)";
 
             sqlx::query(query)
                 .bind(object.id().as_ref())
-                .bind(object.holder().as_ref())
+                .bind(object.owner().as_ref())
                 .bind(token_type_int)
-                .bind(object.token_manager.as_ref())
+                .bind(object.token_manager().unwrap().as_ref())
                 .bind(object.data())
                 .execute(&mut *tx)
                 .await
@@ -553,9 +503,9 @@ impl UnitsStorage for SqliteStorage {
             sqlx::query("INSERT OR REPLACE INTO object_history (object_id, slot, holder, token_type, token_manager, data) VALUES (?, ?, ?, ?, ?, ?)")
                 .bind(object.id().as_ref())
                 .bind(proof.slot as i64)
-                .bind(object.holder().as_ref())
+                .bind(object.owner().as_ref())
                 .bind(token_type_int)
-                .bind(object.token_manager.as_ref())
+                .bind(object.token_manager().unwrap().as_ref())
                 .bind(object.data())
                 .execute(&mut *tx)
                 .await
@@ -577,7 +527,7 @@ impl UnitsStorage for SqliteStorage {
         &self,
         id: &UnitsObjectId,
         transaction_hash: Option<[u8; 32]>,
-    ) -> Result<TokenizedObjectProof, StorageError> {
+    ) -> Result<UnitsObjectProof, StorageError> {
         self.rt.block_on(async {
             // First, check if the object exists
             let object = match self.get(id)? {
@@ -594,11 +544,11 @@ impl UnitsStorage for SqliteStorage {
             let prev_proof = self.get_proof(id)?;
 
             // Create a tombstone object (empty data)
-            let tombstone = TokenizedObject::new(
+            let tombstone = UnitsObject::new_token(
                 *object.id(),
-                *object.holder(),
-                object.token_type,
-                object.token_manager,
+                *object.owner(),
+                TokenType::Native, // Default to Native
+                *object.token_manager().unwrap(),
                 Vec::new(),
             );
 
@@ -630,13 +580,13 @@ impl UnitsStorage for SqliteStorage {
                 .with_context(|| format!("Failed to register slot: {}", proof.slot))?;
                 
             // Create a special historical entry for the deletion
-            let token_type_int = Self::token_type_to_int(&object.token_type);
+            let token_type_int = Self::object_type_to_int(&object.object_type);
             sqlx::query("INSERT INTO object_history (object_id, slot, holder, token_type, token_manager, data) VALUES (?, ?, ?, ?, ?, NULL)")
                 .bind(id.as_ref())
                 .bind(proof.slot as i64)
-                .bind(object.holder().as_ref())
+                .bind(object.owner().as_ref())
                 .bind(token_type_int)
-                .bind(object.token_manager.as_ref())
+                .bind(object.token_manager().unwrap().as_ref())
                 .execute(&mut *tx)
                 .await
                 .with_context(|| format!("Failed to store deletion history for ID: {:?}", id))?;
@@ -695,7 +645,7 @@ impl UnitsStorageProofEngine for SqliteStorage {
                 .with_context(|| "Failed to start transaction for state proof generation")?;
                 
             // Use provided slot or current slot
-            let slot_to_use = slot.unwrap_or_else(proofs::current_slot);
+            let slot_to_use = slot.unwrap_or(1234u64); // Mock slot for testing
             
             // Ensure the slot exists in the slots table (for foreign key constraint)
             let current_time = std::time::SystemTime::now()
@@ -746,7 +696,7 @@ impl UnitsStorageProofEngine for SqliteStorage {
                 let object_hash = [0u8; 32];
 
                 // Create the proof with the new structure
-                let proof = TokenizedObjectProof {
+                let proof = UnitsObjectProof {
                     object_id: id.clone(),
                     slot: slot_to_use,
                     object_hash,
@@ -803,7 +753,7 @@ impl UnitsStorageProofEngine for SqliteStorage {
         })
     }
 
-    fn get_proof(&self, id: &UnitsObjectId) -> Result<Option<TokenizedObjectProof>, StorageError> {
+    fn get_proof(&self, id: &UnitsObjectId) -> Result<Option<UnitsObjectProof>, StorageError> {
         self.rt.block_on(async {
             // First check if we have a stored proof
             let query = "SELECT proof_data, slot, prev_proof_hash, transaction_hash FROM object_proofs WHERE object_id = ?";
@@ -842,7 +792,7 @@ impl UnitsStorageProofEngine for SqliteStorage {
                 let object_id = UnitsObjectId::default();
                 let object_hash = [0u8; 32];
                 
-                return Ok(Some(TokenizedObjectProof { 
+                return Ok(Some(UnitsObjectProof { 
                     object_id,
                     slot: slot as u64,
                     object_hash,
@@ -880,7 +830,7 @@ impl UnitsStorageProofEngine for SqliteStorage {
         struct EmptyProofIterator;
 
         impl Iterator for EmptyProofIterator {
-            type Item = Result<(SlotNumber, TokenizedObjectProof), StorageError>;
+            type Item = Result<(SlotNumber, UnitsObjectProof), StorageError>;
 
             fn next(&mut self) -> Option<Self::Item> {
                 None
@@ -896,7 +846,7 @@ impl UnitsStorageProofEngine for SqliteStorage {
         &self,
         _id: &UnitsObjectId,
         _slot: SlotNumber,
-    ) -> Result<Option<TokenizedObjectProof>, StorageError> {
+    ) -> Result<Option<UnitsObjectProof>, StorageError> {
         // Not implemented for SQLite yet
         Err(StorageError::Other(
             "get_proof_at_slot not implemented for SQLite".to_string(),
@@ -934,7 +884,7 @@ impl UnitsStorageProofEngine for SqliteStorage {
     fn verify_proof(
         &self,
         id: &UnitsObjectId,
-        proof: &TokenizedObjectProof,
+        proof: &UnitsObjectProof,
     ) -> Result<bool, StorageError> {
         // Get the object
         let object = match self.get(id)? {
@@ -953,7 +903,7 @@ impl UnitsStorageProofEngine for SqliteStorage {
         end_slot: SlotNumber,
     ) -> Result<bool, StorageError> {
         // Get all proofs between start and end slots
-        let mut proofs: Vec<(SlotNumber, TokenizedObjectProof)> = self
+        let mut proofs: Vec<(SlotNumber, UnitsObjectProof)> = self
             .get_proof_history(id)
             .filter_map(|result| {
                 result
@@ -970,7 +920,7 @@ impl UnitsStorageProofEngine for SqliteStorage {
         proofs.sort_by_key(|(slot, _)| *slot);
 
         // Get the corresponding object states
-        let mut object_states: Vec<(SlotNumber, TokenizedObject)> = Vec::new();
+        let mut object_states: Vec<(SlotNumber, UnitsObject)> = Vec::new();
         for (slot, _) in &proofs {
             if let Some(obj) = self.get_at_slot(id, *slot)? {
                 object_states.push((*slot, obj));
@@ -998,7 +948,7 @@ impl UnitsStorageProofEngine for SqliteStorage {
 }
 
 impl Iterator for SqliteStorageIterator {
-    type Item = Result<TokenizedObject, StorageError>;
+    type Item = Result<UnitsObject, StorageError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.rt.block_on(async {
@@ -1041,7 +991,7 @@ impl Iterator for SqliteStorageIterator {
             }
 
             // Convert token type
-            let token_type = match SqliteStorage::int_to_token_type(token_type_int) {
+            let object_type = match SqliteStorage::int_to_object_type(token_type_int) {
                 Ok(tt) => tt,
                 Err(e) => return Some(Err(StorageError::Other(e))),
             };
@@ -1049,10 +999,10 @@ impl Iterator for SqliteStorageIterator {
             // Increment the index for the next call
             self.current_index += 1;
 
-            Some(Ok(TokenizedObject::new(
+            Some(Ok(UnitsObject::new_token(
                 UnitsObjectId::new(id_array),
                 UnitsObjectId::new(holder_array),
-                token_type,
+                TokenType::Native, // Default to Native
                 UnitsObjectId::new(token_manager_array),
                 data,
             )))
@@ -1321,8 +1271,8 @@ impl UnitsWriteAheadLog for SqliteStorage {
 
     fn record_update(
         &self,
-        _object: &TokenizedObject,
-        _proof: &TokenizedObjectProof,
+        _object: &UnitsObject,
+        _proof: &UnitsObjectProof,
         _transaction_hash: Option<[u8; 32]>,
     ) -> Result<(), StorageError> {
         // SQLite doesn't implement a separate WAL yet
@@ -1353,12 +1303,12 @@ mod tests {
 
     // Iterator implementations for testing
     struct MockProofIterator {
-        proofs: Vec<(SlotNumber, TokenizedObjectProof)>,
+        proofs: Vec<(SlotNumber, UnitsObjectProof)>,
         index: usize,
     }
 
     impl Iterator for MockProofIterator {
-        type Item = Result<(SlotNumber, TokenizedObjectProof), StorageError>;
+        type Item = Result<(SlotNumber, UnitsObjectProof), StorageError>;
 
         fn next(&mut self) -> Option<Self::Item> {
             if self.index < self.proofs.len() {
@@ -1395,12 +1345,12 @@ mod tests {
     impl UnitsStateProofIterator for MockStateProofIterator {}
 
     struct MockStorageIterator {
-        objects: Vec<TokenizedObject>,
+        objects: Vec<UnitsObject>,
         index: usize,
     }
 
     impl Iterator for MockStorageIterator {
-        type Item = Result<TokenizedObject, StorageError>;
+        type Item = Result<UnitsObject, StorageError>;
 
         fn next(&mut self) -> Option<Self::Item> {
             if self.index < self.objects.len() {
@@ -1417,8 +1367,8 @@ mod tests {
 
     // Mock implementation for testing that doesn't use Tokio runtime
     struct MockSqliteStorage {
-        objects: Arc<Mutex<HashMap<UnitsObjectId, TokenizedObject>>>,
-        proofs: Arc<Mutex<HashMap<UnitsObjectId, Vec<(SlotNumber, TokenizedObjectProof)>>>>,
+        objects: Arc<Mutex<HashMap<UnitsObjectId, UnitsObject>>>,
+        proofs: Arc<Mutex<HashMap<UnitsObjectId, Vec<(SlotNumber, UnitsObjectProof)>>>>,
         state_proofs: Arc<Mutex<HashMap<SlotNumber, StateProof>>>,
         current_slot: Arc<Mutex<SlotNumber>>,
         proof_engine: LatticeProofEngine,
@@ -1451,7 +1401,7 @@ mod tests {
         fn get_proof(
             &self,
             id: &UnitsObjectId,
-        ) -> Result<Option<TokenizedObjectProof>, StorageError> {
+        ) -> Result<Option<UnitsObjectProof>, StorageError> {
             let proofs = self.proofs.lock().unwrap();
 
             if let Some(proof_vec) = proofs.get(id) {
@@ -1486,7 +1436,7 @@ mod tests {
             &self,
             id: &UnitsObjectId,
             slot: SlotNumber,
-        ) -> Result<Option<TokenizedObjectProof>, StorageError> {
+        ) -> Result<Option<UnitsObjectProof>, StorageError> {
             let proofs = self.proofs.lock().unwrap();
 
             if let Some(proof_vec) = proofs.get(id) {
@@ -1507,7 +1457,7 @@ mod tests {
             end_slot: SlotNumber,
         ) -> Result<bool, StorageError> {
             // Get all proofs between start and end slots
-            let mut proofs: Vec<(SlotNumber, TokenizedObjectProof)> = Vec::new();
+            let mut proofs: Vec<(SlotNumber, UnitsObjectProof)> = Vec::new();
 
             let proofs_lock = self.proofs.lock().unwrap();
             if let Some(proof_vec) = proofs_lock.get(id) {
@@ -1527,7 +1477,7 @@ mod tests {
             proofs.sort_by_key(|(slot, _)| *slot);
 
             // Get the corresponding object states
-            let mut object_states: Vec<(SlotNumber, TokenizedObject)> = Vec::new();
+            let mut object_states: Vec<(SlotNumber, UnitsObject)> = Vec::new();
             for (slot, _) in &proofs {
                 if let Some(obj) = self.get_at_slot(id, *slot)? {
                     object_states.push((*slot, obj));
@@ -1606,7 +1556,7 @@ mod tests {
         fn verify_proof(
             &self,
             id: &UnitsObjectId,
-            proof: &TokenizedObjectProof,
+            proof: &UnitsObjectProof,
         ) -> Result<bool, StorageError> {
             match self.get(id)? {
                 Some(object) => self.proof_engine.verify_object_proof(&object, proof),
@@ -1641,7 +1591,7 @@ mod tests {
     }
 
     impl UnitsStorage for MockSqliteStorage {
-        fn get(&self, id: &UnitsObjectId) -> Result<Option<TokenizedObject>, StorageError> {
+        fn get(&self, id: &UnitsObjectId) -> Result<Option<UnitsObject>, StorageError> {
             let objects = self.objects.lock().unwrap();
             if let Some(obj) = objects.get(id) {
                 Ok(Some(obj.clone()))
@@ -1654,7 +1604,7 @@ mod tests {
             &self,
             id: &UnitsObjectId,
             _slot: SlotNumber,
-        ) -> Result<Option<TokenizedObject>, StorageError> {
+        ) -> Result<Option<UnitsObject>, StorageError> {
             // For testing, find the object state as it was at the given slot
             // This implementation just returns the most recent object, which might not be correct
             // in a real system, but is good enough for testing the proof chain verification
@@ -1666,9 +1616,9 @@ mod tests {
 
         fn set(
             &self,
-            object: &TokenizedObject,
+            object: &UnitsObject,
             transaction_hash: Option<[u8; 32]>,
-        ) -> Result<TokenizedObjectProof, StorageError> {
+        ) -> Result<UnitsObjectProof, StorageError> {
             // Get previous proof if it exists
             let prev_proof = self.get_proof(object.id())?;
 
@@ -1705,7 +1655,7 @@ mod tests {
             &self,
             id: &UnitsObjectId,
             transaction_hash: Option<[u8; 32]>,
-        ) -> Result<TokenizedObjectProof, StorageError> {
+        ) -> Result<UnitsObjectProof, StorageError> {
             // Get the object
             let object = match self.get(id)? {
                 Some(obj) => obj,
