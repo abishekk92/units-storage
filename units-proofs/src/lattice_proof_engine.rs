@@ -24,8 +24,8 @@ impl LatticeProofEngine {
         use sha2::{Digest, Sha256};
 
         let mut hasher = Sha256::new();
-        hasher.update(object.id.bytes());
-        hasher.update(object.holder.bytes());
+        hasher.update(object.id().bytes());
+        hasher.update(object.holder().bytes());
         hasher.update(object.token_manager.bytes());
 
         hasher.update(&[match object.token_type {
@@ -34,7 +34,7 @@ impl LatticeProofEngine {
             units_core::objects::TokenType::Proxy => 2,
         }]);
 
-        hasher.update(&object.data);
+        hasher.update(object.data());
 
         let result = hasher.finalize();
         let mut hash = [0u8; 32];
@@ -142,7 +142,7 @@ impl ProofEngine for LatticeProofEngine {
         let slot = crate::engine::SlotNumber::default(); // Will be replaced by proper slot logic
 
         let proof = TokenizedObjectProof {
-            object_id: object.id.clone(),
+            object_id: object.id().clone(),
             slot,
             object_hash,
             prev_proof_hash,
@@ -350,13 +350,13 @@ mod tests {
         let id = UnitsObjectId::unique_id_for_tests();
         let holder = UnitsObjectId::unique_id_for_tests();
         let token_manager = UnitsObjectId::unique_id_for_tests();
-        let obj = TokenizedObject {
+        let obj = TokenizedObject::new(
             id,
             holder,
-            token_type: TokenType::Native,
+            TokenType::Native,
             token_manager,
-            data: vec![1, 2, 3, 4],
-        };
+            vec![1, 2, 3, 4],
+        );
 
         // Create a proof engine
         let engine = LatticeProofEngine::new();
@@ -368,8 +368,13 @@ mod tests {
         assert!(engine.verify_object_proof(&obj, &proof).unwrap());
 
         // Modify the object and verify the proof fails
-        let mut modified_obj = obj.clone();
-        modified_obj.data = vec![5, 6, 7, 8];
+        let modified_obj = TokenizedObject::new(
+            *obj.id(),
+            *obj.holder(),
+            obj.token_type,
+            obj.token_manager,
+            vec![5, 6, 7, 8],
+        );
 
         assert!(!engine.verify_object_proof(&modified_obj, &proof).unwrap());
     }
@@ -378,21 +383,21 @@ mod tests {
     fn test_state_proof_generation() {
         use crate::proofs::current_slot;
         // Create multiple test objects
-        let obj1 = TokenizedObject {
-            id: UnitsObjectId::unique_id_for_tests(),
-            holder: UnitsObjectId::unique_id_for_tests(),
-            token_type: TokenType::Native,
-            token_manager: UnitsObjectId::unique_id_for_tests(),
-            data: vec![1, 2, 3],
-        };
+        let obj1 = TokenizedObject::new(
+            UnitsObjectId::unique_id_for_tests(),
+            UnitsObjectId::unique_id_for_tests(),
+            TokenType::Native,
+            UnitsObjectId::unique_id_for_tests(),
+            vec![1, 2, 3],
+        );
 
-        let obj2 = TokenizedObject {
-            id: UnitsObjectId::unique_id_for_tests(),
-            holder: UnitsObjectId::unique_id_for_tests(),
-            token_type: TokenType::Custodial,
-            token_manager: UnitsObjectId::unique_id_for_tests(),
-            data: vec![4, 5, 6],
-        };
+        let obj2 = TokenizedObject::new(
+            UnitsObjectId::unique_id_for_tests(),
+            UnitsObjectId::unique_id_for_tests(),
+            TokenType::Custodial,
+            UnitsObjectId::unique_id_for_tests(),
+            vec![4, 5, 6],
+        );
 
         // Create a proof engine
         let engine = LatticeProofEngine::new();
@@ -402,7 +407,7 @@ mod tests {
         let proof2 = engine.generate_object_proof(&obj2, None, None).unwrap();
 
         // Create a collection of object proofs
-        let object_proofs = vec![(obj1.id, proof1), (obj2.id, proof2)];
+        let object_proofs = vec![(*obj1.id(), proof1), (*obj2.id(), proof2)];
 
         // Generate a state proof
         let state_proof = engine

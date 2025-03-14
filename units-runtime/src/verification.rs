@@ -205,13 +205,13 @@ mod tests {
     use units_proofs::lattice_proof_engine::LatticeProofEngine;
 
     fn create_test_object() -> TokenizedObject {
-        TokenizedObject {
-            id: UnitsObjectId::unique_id_for_tests(),
-            holder: UnitsObjectId::unique_id_for_tests(),
-            token_type: TokenType::Native,
-            token_manager: UnitsObjectId::unique_id_for_tests(),
-            data: vec![1, 2, 3, 4],
-        }
+        TokenizedObject::new(
+            UnitsObjectId::unique_id_for_tests(),
+            UnitsObjectId::unique_id_for_tests(),
+            TokenType::Native,
+            UnitsObjectId::unique_id_for_tests(),
+            vec![1, 2, 3, 4],
+        )
     }
 
     #[test]
@@ -231,8 +231,13 @@ mod tests {
         assert_eq!(result, VerificationResult::Valid);
 
         // Modify the object and verify the proof should fail
-        let mut modified_object = object.clone();
-        modified_object.data = vec![5, 6, 7, 8];
+        let modified_object = TokenizedObject::new(
+            *object.id(),
+            *object.holder(),
+            object.token_type,
+            object.token_manager,
+            vec![5, 6, 7, 8],
+        );
 
         let invalid_result = verifier.verify_object_proof(&modified_object, &proof);
         assert!(matches!(invalid_result, VerificationResult::Invalid(_)));
@@ -261,13 +266,13 @@ mod tests {
         let mut receipt = TransactionReceipt::new(transaction_hash, 123, true, 456789);
 
         // Add the proofs to the receipt (now stored as Vec<u8>)
-        receipt.add_proof(object1.id, bincode::serialize(&proof1).unwrap());
-        receipt.add_proof(object2.id, bincode::serialize(&proof2).unwrap());
+        receipt.add_proof(*object1.id(), bincode::serialize(&proof1).unwrap());
+        receipt.add_proof(*object2.id(), bincode::serialize(&proof2).unwrap());
 
         // Create a map of objects
         let mut objects = HashMap::new();
-        objects.insert(object1.id, object1.clone());
-        objects.insert(object2.id, object2.clone());
+        objects.insert(*object1.id(), object1.clone());
+        objects.insert(*object2.id(), object2.clone());
 
         // Create a verifier
         let verifier = ProofVerifier::new(&engine);
@@ -278,7 +283,7 @@ mod tests {
 
         // Missing object scenario
         let mut missing_objects = objects.clone();
-        missing_objects.remove(&object1.id);
+        missing_objects.remove(object1.id());
         
         let missing_result = verifier.verify_transaction_receipt(&receipt, &missing_objects);
         assert!(matches!(missing_result, VerificationResult::MissingData(_)));

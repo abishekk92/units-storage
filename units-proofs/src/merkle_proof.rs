@@ -78,10 +78,10 @@ impl MerkleTree {
         let leaf_hash = Self::hash_object(object);
 
         // Get the path to this leaf
-        let path = key_to_path(object.id.as_ref());
+        let path = key_to_path(object.id().as_ref());
 
         // Update the leaf in our map
-        self.leaves.insert(object.id.as_ref().to_vec(), leaf_hash);
+        self.leaves.insert(object.id().as_ref().to_vec(), leaf_hash);
 
         // Update the tree structure
         self.update_tree(path, leaf_hash);
@@ -127,10 +127,10 @@ impl MerkleTree {
     /// Generate a proof of inclusion for an object
     pub fn generate_proof(&self, object: &TokenizedObject) -> Option<MerkleProof> {
         // Get the leaf hash
-        let leaf_hash = self.leaves.get(object.id.as_ref())?;
+        let leaf_hash = self.leaves.get(object.id().as_ref())?;
 
         // Get the path to this leaf
-        let path = key_to_path(object.id.as_ref());
+        let path = key_to_path(object.id().as_ref());
         let path_len = path.len();
 
         // Collect all sibling hashes along the path
@@ -153,7 +153,7 @@ impl MerkleTree {
 
         Some(MerkleProof {
             leaf_hash: *leaf_hash,
-            object_id: object.id.as_ref().to_vec(),
+            object_id: object.id().as_ref().to_vec(),
             siblings,
         })
     }
@@ -200,15 +200,15 @@ impl MerkleTree {
         // Create a leaf prefix to distinguish from internal nodes
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"LEAF:");
-        hasher.update(object.id.as_ref());
-        hasher.update(object.holder.as_ref());
+        hasher.update(object.id().as_ref());
+        hasher.update(object.holder().as_ref());
         hasher.update(object.token_manager.as_ref());
         hasher.update(&[match object.token_type {
             units_core::objects::TokenType::Native => 0,
             units_core::objects::TokenType::Custodial => 1,
             units_core::objects::TokenType::Proxy => 2,
         }]);
-        hasher.update(&object.data);
+        hasher.update(object.data());
 
         *hasher.finalize().as_bytes()
     }
@@ -393,7 +393,7 @@ impl MerkleProofEngine {
         let mut token_proof = TokenizedObjectProof::new(serialized, None, transaction_hash);
 
         // Set the object-specific fields that the constructor doesn't handle
-        token_proof.object_id = object.id.clone();
+        token_proof.object_id = object.id().clone();
         token_proof.object_hash = MerkleTree::hash_object(object);
 
         token_proof
@@ -417,7 +417,7 @@ impl ProofEngine for MerkleProofEngine {
         let mut proof = TokenizedObjectProof::new(proof_data, prev_proof, transaction_hash);
 
         // Set the object-specific fields that the constructor doesn't handle
-        proof.object_id = object.id.clone();
+        proof.object_id = object.id().clone();
         proof.object_hash = MerkleTree::hash_object(object);
 
         Ok(proof)
@@ -605,13 +605,13 @@ mod tests {
         let id = UnitsObjectId::unique_id_for_tests();
         let holder = UnitsObjectId::unique_id_for_tests();
         let token_manager = UnitsObjectId::unique_id_for_tests();
-        let obj = TokenizedObject {
+        let obj = TokenizedObject::new(
             id,
             holder,
-            token_type: TokenType::Native,
+            TokenType::Native,
             token_manager,
-            data: vec![1, 2, 3, 4],
-        };
+            vec![1, 2, 3, 4],
+        );
 
         // Create a Merkle tree and add the object
         let mut tree = MerkleTree::new();
@@ -631,8 +631,13 @@ mod tests {
         assert!(tree.verify_proof(&deserialized));
 
         // Modify the object and verify the proof fails
-        let mut modified_obj = obj.clone();
-        modified_obj.data = vec![5, 6, 7, 8];
+        let modified_obj = TokenizedObject::new(
+            *obj.id(),
+            *obj.holder(),
+            obj.token_type,
+            obj.token_manager,
+            vec![5, 6, 7, 8],
+        );
 
         // The proof should be valid for the path, but the leaf hash will be different
         let modified_leaf_hash = MerkleTree::hash_object(&modified_obj);
@@ -646,13 +651,13 @@ mod tests {
         let id = units_core::id::UnitsObjectId::unique_id_for_tests();
         let holder = units_core::id::UnitsObjectId::unique_id_for_tests();
         let token_manager = units_core::id::UnitsObjectId::unique_id_for_tests();
-        let obj = TokenizedObject {
-            id: id.clone(),
+        let obj = TokenizedObject::new(
+            id.clone(),
             holder,
-            token_type: TokenType::Native,
+            TokenType::Native,
             token_manager,
-            data: vec![1, 2, 3, 4],
-        };
+            vec![1, 2, 3, 4],
+        );
 
         // Create a Merkle proof engine
         let engine = MerkleProofEngine::new();
@@ -668,8 +673,13 @@ mod tests {
         assert!(engine.verify_object_proof(&obj, &proof).unwrap());
 
         // Modify the object and verify the proof fails
-        let mut modified_obj = obj.clone();
-        modified_obj.data = vec![5, 6, 7, 8];
+        let modified_obj = TokenizedObject::new(
+            *obj.id(),
+            *obj.holder(),
+            obj.token_type,
+            obj.token_manager,
+            vec![5, 6, 7, 8],
+        );
 
         assert!(!engine.verify_object_proof(&modified_obj, &proof).unwrap());
 
@@ -697,13 +707,13 @@ mod tests {
         // Create 5 objects with different data
         for i in 0..5 {
             let id = UnitsObjectId::unique_id_for_tests();
-            let obj = TokenizedObject {
-                id: id.clone(),
-                holder: UnitsObjectId::unique_id_for_tests(),
-                token_type: TokenType::Native,
-                token_manager: UnitsObjectId::unique_id_for_tests(),
-                data: vec![i as u8, (i + 1) as u8, (i + 2) as u8],
-            };
+            let obj = TokenizedObject::new(
+                id.clone(),
+                UnitsObjectId::unique_id_for_tests(),
+                TokenType::Native,
+                UnitsObjectId::unique_id_for_tests(),
+                vec![i as u8, (i + 1) as u8, (i + 2) as u8],
+            );
 
             // Add objects to the tree
             let proof = engine_mut.add_and_generate_proof(&obj, None);
@@ -724,8 +734,13 @@ mod tests {
             assert!(engine.verify_object_proof(obj, proof).unwrap());
 
             // Create a modified version of the object
-            let mut modified_obj = obj.clone();
-            modified_obj.data = vec![99, 100, 101]; // completely different data
+            let modified_obj = TokenizedObject::new(
+                *obj.id(),
+                *obj.holder(),
+                obj.token_type,
+                obj.token_manager,
+                vec![99, 100, 101], // completely different data
+            );
 
             // Modified object should not verify with the original proof
             assert!(!engine.verify_object_proof(&modified_obj, proof).unwrap());

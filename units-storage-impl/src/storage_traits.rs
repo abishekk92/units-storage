@@ -414,7 +414,7 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
 
         for object in objects {
             let proof = self.set(object, Some(transaction_hash))?;
-            proofs.insert(object.id, proof);
+            proofs.insert(*object.id(), proof);
         }
 
         Ok(proofs)
@@ -500,12 +500,12 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
 
         // For each object to store, retrieve its current state (if any) for the before image
         for object in objects_to_store {
-            let before_image = self.get(&object.id)?;
+            let before_image = self.get(object.id())?;
 
             // Create a transaction effect
             let effect = TransactionEffect {
                 transaction_hash,
-                object_id: object.id,
+                object_id: *object.id(),
                 before_image,
                 after_image: Some(object.clone()),
             };

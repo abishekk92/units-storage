@@ -8,7 +8,13 @@ pub mod scheduler;
 // Re-export the main types for convenience
 pub use error::StorageError;
 pub use id::UnitsObjectId;
-pub use objects::{TokenType, TokenizedObject};
+pub use objects::{
+    TokenType, 
+    TokenizedObject, 
+    CodeObject, 
+    CodeObjectMetadata, 
+    UnitsObject
+};
 
 // Re-export lock types
 pub use locks::{
@@ -28,6 +34,7 @@ pub use transaction::{
     TransactionEffect,
     TransactionHash,
     TransactionReceipt,
+    ObjectEffect,
 };
 
 // Re-export scheduler types

@@ -415,13 +415,13 @@ impl UnitsStorage for SqliteStorage {
                 Err(e) => return Err(StorageError::Other(e)),
             };
 
-            Ok(Some(TokenizedObject {
-                id: UnitsObjectId::new(id_array),
-                holder: UnitsObjectId::new(holder_array),
+            Ok(Some(TokenizedObject::new(
+                UnitsObjectId::new(id_array),
+                UnitsObjectId::new(holder_array),
                 token_type,
-                token_manager: UnitsObjectId::new(token_manager_array),
+                UnitsObjectId::new(token_manager_array),
                 data,
-            }))
+            )))
         })
     }
 
@@ -478,13 +478,13 @@ impl UnitsStorage for SqliteStorage {
                     Err(e) => return Err(StorageError::Other(e)),
                 };
 
-                Ok(Some(TokenizedObject {
-                    id: *id,
-                    holder: UnitsObjectId::new(holder_array),
+                Ok(Some(TokenizedObject::new(
+                    *id,
+                    UnitsObjectId::new(holder_array),
                     token_type,
-                    token_manager: UnitsObjectId::new(token_manager_array),
+                    UnitsObjectId::new(token_manager_array),
                     data,
-                }))
+                )))
             } else {
                 // No historical record found at or before the requested slot
                 Ok(None)
@@ -509,21 +509,21 @@ impl UnitsStorage for SqliteStorage {
             let query = "INSERT OR REPLACE INTO objects (id, holder, token_type, token_manager, data) VALUES (?, ?, ?, ?, ?)";
 
             sqlx::query(query)
-                .bind(object.id.as_ref())
-                .bind(object.holder.as_ref())
+                .bind(object.id().as_ref())
+                .bind(object.holder().as_ref())
                 .bind(token_type_int)
                 .bind(object.token_manager.as_ref())
-                .bind(&object.data)
+                .bind(object.data())
                 .execute(&mut *tx)
                 .await
-                .with_context(|| format!("Failed to store object with ID: {:?}", object.id))?;
+                .with_context(|| format!("Failed to store object with ID: {:?}", object.id()))?;
 
             // Get previous proof if it exists
-            let prev_proof = self.get_proof(&object.id)?;
+            let prev_proof = self.get_proof(object.id())?;
 
             // Generate and store a proof for the object, including transaction hash
             let proof = self.proof_engine.generate_object_proof(object, prev_proof.as_ref(), transaction_hash)
-                .with_context(|| format!("Failed to generate proof for object ID: {:?}", object.id))?;
+                .with_context(|| format!("Failed to generate proof for object ID: {:?}", object.id()))?;
 
             // Ensure the slot exists in the slots table (for foreign key constraint)
             let current_time = std::time::SystemTime::now()
@@ -540,26 +540,26 @@ impl UnitsStorage for SqliteStorage {
 
             // Store the proof with its metadata including transaction hash
             sqlx::query("INSERT OR REPLACE INTO object_proofs (object_id, proof_data, slot, prev_proof_hash, transaction_hash) VALUES (?, ?, ?, ?, ?)")
-                .bind(object.id.as_ref())
+                .bind(object.id().as_ref())
                 .bind(&proof.proof_data)
                 .bind(proof.slot as i64)
                 .bind(proof.prev_proof_hash.as_ref().map(|h| h.as_ref()))
                 .bind(proof.transaction_hash.as_ref().map(|h| h.as_ref()))
                 .execute(&mut *tx)
                 .await
-                .with_context(|| format!("Failed to store proof for object ID: {:?}", object.id))?;
+                .with_context(|| format!("Failed to store proof for object ID: {:?}", object.id()))?;
                 
             // Store a snapshot in the object history table
             sqlx::query("INSERT OR REPLACE INTO object_history (object_id, slot, holder, token_type, token_manager, data) VALUES (?, ?, ?, ?, ?, ?)")
-                .bind(object.id.as_ref())
+                .bind(object.id().as_ref())
                 .bind(proof.slot as i64)
-                .bind(object.holder.as_ref())
+                .bind(object.holder().as_ref())
                 .bind(token_type_int)
                 .bind(object.token_manager.as_ref())
-                .bind(&object.data)
+                .bind(object.data())
                 .execute(&mut *tx)
                 .await
-                .with_context(|| format!("Failed to store object history for ID: {:?}", object.id))?;
+                .with_context(|| format!("Failed to store object history for ID: {:?}", object.id()))?;
 
             // Commit the transaction
             tx.commit()
@@ -594,8 +594,13 @@ impl UnitsStorage for SqliteStorage {
             let prev_proof = self.get_proof(id)?;
 
             // Create a tombstone object (empty data)
-            let mut tombstone = object.clone();
-            tombstone.data = Vec::new();
+            let tombstone = TokenizedObject::new(
+                *object.id(),
+                *object.holder(),
+                object.token_type,
+                object.token_manager,
+                Vec::new(),
+            );
 
             // Generate proof for the deletion, including transaction hash
             let proof = self.proof_engine.generate_object_proof(
@@ -629,7 +634,7 @@ impl UnitsStorage for SqliteStorage {
             sqlx::query("INSERT INTO object_history (object_id, slot, holder, token_type, token_manager, data) VALUES (?, ?, ?, ?, ?, NULL)")
                 .bind(id.as_ref())
                 .bind(proof.slot as i64)
-                .bind(object.holder.as_ref())
+                .bind(object.holder().as_ref())
                 .bind(token_type_int)
                 .bind(object.token_manager.as_ref())
                 .execute(&mut *tx)
@@ -1044,13 +1049,13 @@ impl Iterator for SqliteStorageIterator {
             // Increment the index for the next call
             self.current_index += 1;
 
-            Some(Ok(TokenizedObject {
-                id: UnitsObjectId::new(id_array),
-                holder: UnitsObjectId::new(holder_array),
+            Some(Ok(TokenizedObject::new(
+                UnitsObjectId::new(id_array),
+                UnitsObjectId::new(holder_array),
                 token_type,
-                token_manager: UnitsObjectId::new(token_manager_array),
+                UnitsObjectId::new(token_manager_array),
                 data,
-            }))
+            )))
         })
     }
 }
@@ -1535,7 +1540,7 @@ mod tests {
             // Debug information
             println!("Verification states:");
             for (slot, obj) in &object_states {
-                println!("  State at slot {}: data={:?}", slot, obj.data);
+                println!("  State at slot {}: data={:?}", slot, obj.data());
             }
 
             match self
@@ -1665,7 +1670,7 @@ mod tests {
             transaction_hash: Option<[u8; 32]>,
         ) -> Result<TokenizedObjectProof, StorageError> {
             // Get previous proof if it exists
-            let prev_proof = self.get_proof(&object.id)?;
+            let prev_proof = self.get_proof(object.id())?;
 
             // Force using our own slot numbers for testing to ensure they are sequential
             let slot = self.next_slot();
@@ -1683,13 +1688,13 @@ mod tests {
             // Store the object
             {
                 let mut objects = self.objects.lock().unwrap();
-                objects.insert(object.id, object.clone());
+                objects.insert(*object.id(), object.clone());
             }
 
             // Store the proof
             {
                 let mut proofs = self.proofs.lock().unwrap();
-                let proof_vec = proofs.entry(object.id).or_insert_with(Vec::new);
+                let proof_vec = proofs.entry(*object.id()).or_insert_with(Vec::new);
                 proof_vec.push((proof.slot, proof.clone()));
             }
 
@@ -1776,13 +1781,13 @@ mod tests {
         let id = UnitsObjectId::unique_id_for_tests();
         let holder = UnitsObjectId::unique_id_for_tests();
         let token_manager = UnitsObjectId::unique_id_for_tests();
-        let obj = TokenizedObject {
+        let obj = TokenizedObject::new(
             id,
             holder,
-            token_type: TokenType::Native,
+            TokenType::Native,
             token_manager,
-            data: vec![1, 2, 3, 4],
-        };
+            vec![1, 2, 3, 4],
+        );
 
         // Create a fake transaction hash
         let transaction_hash = Some([1u8; 32]);
@@ -1791,11 +1796,11 @@ mod tests {
         storage.set(&obj, transaction_hash).unwrap();
         let retrieved = storage.get(&id).unwrap().unwrap();
 
-        assert_eq!(retrieved.id, obj.id);
-        assert_eq!(retrieved.holder, obj.holder);
+        assert_eq!(*retrieved.id(), *obj.id());
+        assert_eq!(*retrieved.holder(), *obj.holder());
         assert_eq!(retrieved.token_type, obj.token_type);
         assert_eq!(retrieved.token_manager, obj.token_manager);
-        assert_eq!(retrieved.data, obj.data);
+        assert_eq!(retrieved.data(), obj.data());
 
         // Test delete
         storage.delete(&id, transaction_hash).unwrap();
@@ -1809,13 +1814,15 @@ mod tests {
 
         // Create test object
         let id = UnitsObjectId::unique_id_for_tests();
-        let obj = TokenizedObject {
+        let holder = UnitsObjectId::unique_id_for_tests();
+        let token_manager = UnitsObjectId::unique_id_for_tests();
+        let obj = TokenizedObject::new(
             id,
-            holder: UnitsObjectId::unique_id_for_tests(),
-            token_type: TokenType::Native,
-            token_manager: UnitsObjectId::unique_id_for_tests(),
-            data: vec![1, 2, 3, 4],
-        };
+            holder,
+            TokenType::Native,
+            token_manager,
+            vec![1, 2, 3, 4],
+        );
 
         // Create a unique transaction hash
         let transaction_hash = Some([42u8; 32]);
@@ -1827,7 +1834,7 @@ mod tests {
         assert_eq!(proof.transaction_hash, transaction_hash);
 
         // Get the proof from storage
-        let retrieved_proof = storage.get_proof(&id).unwrap().unwrap();
+        let retrieved_proof = storage.get_proof(&obj.id()).unwrap().unwrap();
 
         // Verify the retrieved proof has the correct transaction hash
         assert_eq!(retrieved_proof.transaction_hash, transaction_hash);
@@ -1842,13 +1849,15 @@ mod tests {
         for i in 0..5 {
             let id = UnitsObjectId::unique_id_for_tests();
 
-            let obj = TokenizedObject {
+            let holder = UnitsObjectId::unique_id_for_tests();
+            let token_manager = UnitsObjectId::unique_id_for_tests();
+            let obj = TokenizedObject::new(
                 id,
-                holder: UnitsObjectId::unique_id_for_tests(),
-                token_type: TokenType::Native,
-                token_manager: UnitsObjectId::unique_id_for_tests(),
-                data: vec![1, 2, 3],
-            };
+                holder,
+                TokenType::Native,
+                token_manager,
+                vec![1, 2, 3],
+            );
 
             // Create a unique transaction hash for each object
             let mut transaction_hash = [0u8; 32];
@@ -1876,13 +1885,15 @@ mod tests {
 
         // Create and store an object to ensure we have something to generate proofs for
         let id = UnitsObjectId::unique_id_for_tests();
-        let obj = TokenizedObject {
+        let holder = UnitsObjectId::unique_id_for_tests();
+        let token_manager = UnitsObjectId::unique_id_for_tests();
+        let obj = TokenizedObject::new(
             id,
-            holder: UnitsObjectId::unique_id_for_tests(),
-            token_type: TokenType::Native,
-            token_manager: UnitsObjectId::unique_id_for_tests(),
-            data: vec![1, 2, 3, 4],
-        };
+            holder,
+            TokenType::Native,
+            token_manager,
+            vec![1, 2, 3, 4],
+        );
 
         // Use a transaction hash
         let transaction_hash = Some([2u8; 32]);
@@ -1893,8 +1904,8 @@ mod tests {
         let _proof = storage.generate_state_proof(None).unwrap();
 
         // Test proof verification
-        let object_proof = storage.get_proof(&id).unwrap().unwrap();
-        let verification_result = storage.verify_proof(&id, &object_proof).unwrap();
+        let object_proof = storage.get_proof(&obj.id()).unwrap().unwrap();
+        let verification_result = storage.verify_proof(&obj.id(), &object_proof).unwrap();
         assert!(verification_result);
     }
 
@@ -1909,13 +1920,13 @@ mod tests {
         let id = UnitsObjectId::unique_id_for_tests();
         let holder = UnitsObjectId::unique_id_for_tests();
         let token_manager = UnitsObjectId::unique_id_for_tests();
-        let mut obj = TokenizedObject {
+        let obj = TokenizedObject::new(
             id,
             holder,
-            token_type: TokenType::Native,
+            TokenType::Native,
             token_manager,
-            data: vec![1, 2, 3, 4],
-        };
+            vec![1, 2, 3, 4],
+        );
 
         println!("Storing initial object");
         // Store the object initially - this will create the first proof
@@ -1923,14 +1934,26 @@ mod tests {
         println!("Initial proof slot: {}", proof1.slot);
 
         // Modify and store the object again to create a chain of proofs
-        obj.data = vec![5, 6, 7, 8];
-        let proof2 = storage.set(&obj, None).unwrap();
+        let obj_updated = TokenizedObject::new(
+            *obj.id(),
+            *obj.holder(),
+            obj.token_type,
+            obj.token_manager,
+            vec![5, 6, 7, 8],
+        );
+        let proof2 = storage.set(&obj_updated, None).unwrap();
         println!("Second proof slot: {}", proof2.slot);
         println!("Second proof prev_hash: {:?}", proof2.prev_proof_hash);
 
         // Modify and store once more
-        obj.data = vec![9, 10, 11, 12];
-        let proof3 = storage.set(&obj, None).unwrap();
+        let obj_updated2 = TokenizedObject::new(
+            *obj_updated.id(),
+            *obj_updated.holder(),
+            obj_updated.token_type,
+            obj_updated.token_manager,
+            vec![9, 10, 11, 12],
+        );
+        let proof3 = storage.set(&obj_updated2, None).unwrap();
         println!("Third proof slot: {}", proof3.slot);
         println!("Third proof prev_hash: {:?}", proof3.prev_proof_hash);
 
@@ -1970,7 +1993,7 @@ mod tests {
 
         // Verify the object
         let obj_from_storage = storage.get(&id).unwrap().unwrap();
-        println!("Object in storage: {:?}", obj_from_storage.data);
+        println!("Object in storage: {:?}", obj_from_storage.data());
 
         match storage.verify_proof_chain(&id, start_slot, end_slot) {
             Ok(true) => println!("Verification succeeded"),

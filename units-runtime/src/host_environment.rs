@@ -152,17 +152,17 @@ impl HostEnvironment for StandardHostEnvironment {
 
         for (_id, object) in objects {
             // Validate the object
-            if object.id == UnitsObjectId::default() {
+            if *object.id() == UnitsObjectId::default() {
                 return Err(anyhow!("Object ID cannot be null"));
             }
 
             // Check that the object exists in the context
-            if !self.objects.contains_key(&object.id) {
-                return Err(anyhow!("Cannot modify non-existent object: {}", object.id));
+            if !self.objects.contains_key(object.id()) {
+                return Err(anyhow!("Cannot modify non-existent object: {}", object.id()));
             }
 
             // Store the modified object
-            self.modified_objects.insert(object.id, object);
+            self.modified_objects.insert(*object.id(), object);
             count += 1;
         }
 

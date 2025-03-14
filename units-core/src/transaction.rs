@@ -400,6 +400,29 @@ pub struct TransactionEffect {
     pub after_image: Option<TokenizedObject>,
 }
 
+/// Represents the before and after state of a units object in a transaction
+/// This is a generic version that supports both TokenizedObject and CodeObject
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ObjectEffect {
+    /// Effect on a TokenizedObject
+    Token(TransactionEffect),
+    
+    /// Effect on a CodeObject
+    Code {
+        /// The transaction that caused this effect
+        transaction_hash: TransactionHash,
+        
+        /// The ID of the object affected
+        object_id: UnitsObjectId,
+        
+        /// The state of the object before the transaction (None if object was created)
+        before_image: Option<crate::objects::CodeObject>,
+        
+        /// The state of the object after the transaction (None if object was deleted)
+        after_image: Option<crate::objects::CodeObject>,
+    },
+}
+
 /// A receipt of a processed transaction, containing all proofs of object modifications
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransactionReceipt {
@@ -425,8 +448,12 @@ pub struct TransactionReceipt {
     /// Any error message from the execution (if not successful)
     pub error_message: Option<String>,
 
-    /// Effects track the before and after state of objects for easier rollback
+    /// Legacy effects for backward compatibility (TokenizedObject only)
     pub effects: Vec<TransactionEffect>,
+    
+    /// New generic effects that support both TokenizedObject and CodeObject
+    #[serde(default)]
+    pub object_effects: Vec<ObjectEffect>,
 }
 
 impl TransactionReceipt {
@@ -450,6 +477,7 @@ impl TransactionReceipt {
             },
             error_message: None,
             effects: Vec::new(),
+            object_effects: Vec::new(),
         }
     }
 
@@ -470,6 +498,7 @@ impl TransactionReceipt {
             commitment_level,
             error_message: None,
             effects: Vec::new(),
+            object_effects: Vec::new(),
         }
     }
 
@@ -478,9 +507,36 @@ impl TransactionReceipt {
         self.object_proofs.insert(object_id, proof);
     }
 
-    /// Add a transaction effect to the receipt
+    /// Add a transaction effect to the receipt (legacy method)
     pub fn add_effect(&mut self, effect: TransactionEffect) {
+        // Add to both legacy effects and new object_effects for backward compatibility
+        self.object_effects.push(ObjectEffect::Token(effect.clone()));
         self.effects.push(effect);
+    }
+
+    /// Add a code object effect to the receipt
+    pub fn add_code_effect(
+        &mut self,
+        transaction_hash: TransactionHash,
+        object_id: UnitsObjectId,
+        before_image: Option<crate::objects::CodeObject>,
+        after_image: Option<crate::objects::CodeObject>,
+    ) {
+        self.object_effects.push(ObjectEffect::Code {
+            transaction_hash,
+            object_id,
+            before_image,
+            after_image,
+        });
+    }
+
+    /// Add a generic object effect to the receipt
+    pub fn add_object_effect(&mut self, effect: ObjectEffect) {
+        // If it's a TokenizedObject effect, also add to legacy effects for backward compatibility
+        if let ObjectEffect::Token(token_effect) = &effect {
+            self.effects.push(token_effect.clone());
+        }
+        self.object_effects.push(effect);
     }
 
     /// Set an error message (used when transaction fails)
@@ -509,5 +565,10 @@ impl TransactionReceipt {
     /// Get the number of objects modified by this transaction
     pub fn object_count(&self) -> usize {
         self.object_proofs.len()
+    }
+    
+    /// Get the total number of effects (both token and code objects)
+    pub fn effect_count(&self) -> usize {
+        self.object_effects.len()
     }
 }

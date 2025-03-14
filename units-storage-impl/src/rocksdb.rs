@@ -206,16 +206,16 @@ impl RocksDbStorage {
         };
 
         // Create history key with object ID and slot
-        let history_key = make_history_key(&object.id, slot);
+        let history_key = make_history_key(object.id(), slot);
 
         // Serialize the object
         let serialized_object = bincode::serialize(object)
-            .with_context(|| format!("Failed to serialize object with ID: {:?}", object.id))?;
+            .with_context(|| format!("Failed to serialize object with ID: {:?}", object.id()))?;
 
         // Store the object in the history column family
         self.db
             .put_cf(&cf_object_history, &history_key, &serialized_object)
-            .with_context(|| format!("Failed to store object history for ID: {:?}", object.id))?;
+            .with_context(|| format!("Failed to store object history for ID: {:?}", object.id()))?;
 
         Ok(())
     }
@@ -564,7 +564,7 @@ impl UnitsStorage for RocksDbStorage {
         };
 
         // Get the previous proof for this object, if any
-        let prev_proof = self.get_proof(&object.id)?;
+        let prev_proof = self.get_proof(object.id())?;
 
         // Generate proof for the object, linking to previous proof if it exists
         // and including the transaction hash that led to this state change
@@ -576,23 +576,23 @@ impl UnitsStorage for RocksDbStorage {
 
         // Serialize the object and proof
         let serialized_object = bincode::serialize(object)
-            .with_context(|| format!("Failed to serialize object with ID: {:?}", object.id))?;
+            .with_context(|| format!("Failed to serialize object with ID: {:?}", object.id()))?;
         let serialized_proof = bincode::serialize(&proof)
-            .with_context(|| format!("Failed to serialize proof for object ID: {:?}", object.id))?;
+            .with_context(|| format!("Failed to serialize proof for object ID: {:?}", object.id()))?;
 
         // Store the object and proof with history
         let current_slot = proof.slot;
         self.store_object_with_history(object, current_slot)?;
-        self.store_proof_with_history(&object.id, &proof)?;
+        self.store_proof_with_history(object.id(), &proof)?;
 
         // Also update the current object and proof
         self.db
-            .put_cf(&cf_objects, object.id.as_ref(), &serialized_object)
-            .with_context(|| format!("Failed to store object with ID: {:?}", object.id))?;
+            .put_cf(&cf_objects, object.id().as_ref(), &serialized_object)
+            .with_context(|| format!("Failed to store object with ID: {:?}", object.id()))?;
 
         self.db
-            .put_cf(&cf_object_proofs, object.id.as_ref(), &serialized_proof)
-            .with_context(|| format!("Failed to store proof for object ID: {:?}", object.id))?;
+            .put_cf(&cf_object_proofs, object.id().as_ref(), &serialized_proof)
+            .with_context(|| format!("Failed to store proof for object ID: {:?}", object.id()))?;
 
         // Record the update in the write-ahead log
         self.record_update(object, &proof, transaction_hash)?;
@@ -640,8 +640,13 @@ impl UnitsStorage for RocksDbStorage {
 
         // Create a "tombstone" object to mark deletion
         // In a real system, you might use a dedicated marker
-        let mut tombstone = object.clone();
-        tombstone.data = Vec::new(); // Empty data to indicate deletion
+        let tombstone = TokenizedObject::new(
+            *object.id(),
+            *object.holder(),
+            object.token_type,
+            object.token_manager,
+            Vec::new(), // Empty data to indicate deletion
+        );
 
         // Generate a proof for the deletion, including the transaction hash
         let proof = self.proof_engine.generate_object_proof(
@@ -707,8 +712,8 @@ impl UnitsStorage for RocksDbStorage {
         // Get all objects and their proofs
         for obj_result in self.scan() {
             let obj = obj_result?;
-            if let Some(proof) = self.get_proof(&obj.id)? {
-                object_proofs.push((obj.id.clone(), proof));
+            if let Some(proof) = self.get_proof(obj.id())? {
+                object_proofs.push((*obj.id(), proof));
             }
         }
 
@@ -753,8 +758,8 @@ impl UnitsStorageProofEngine for RocksDbStorage {
         // Get all objects and their proofs
         for obj_result in self.scan() {
             let obj = obj_result?;
-            if let Some(proof) = self.get_proof(&obj.id)? {
-                object_proofs.push((obj.id.clone(), proof));
+            if let Some(proof) = self.get_proof(obj.id())? {
+                object_proofs.push((*obj.id(), proof));
             }
         }
 
@@ -1569,7 +1574,7 @@ mod tests {
             transaction_hash: Option<[u8; 32]>,
         ) -> Result<TokenizedObjectProof, StorageError> {
             // Get previous proof if it exists
-            let prev_proof = self.get_proof(&object.id)?;
+            let prev_proof = self.get_proof(object.id())?;
 
             // Force using our own slot numbers for testing to ensure they are sequential
             let slot = self.next_slot();
@@ -1587,20 +1592,20 @@ mod tests {
             // Store the object
             {
                 let mut objects = self.objects.lock().unwrap();
-                objects.insert(object.id, object.clone());
+                objects.insert(*object.id(), object.clone());
             }
 
             // Store the object in history with its slot
             {
                 let mut object_history = self.object_history.lock().unwrap();
-                let history_vec = object_history.entry(object.id).or_insert_with(Vec::new);
+                let history_vec = object_history.entry(*object.id()).or_insert_with(Vec::new);
                 history_vec.push((proof.slot, object.clone()));
             }
 
             // Store the proof
             {
                 let mut proofs = self.proofs.lock().unwrap();
-                let proof_vec = proofs.entry(object.id).or_insert_with(Vec::new);
+                let proof_vec = proofs.entry(*object.id()).or_insert_with(Vec::new);
                 proof_vec.push((proof.slot, proof.clone()));
             }
 
@@ -1651,13 +1656,13 @@ mod tests {
                 let history_vec = object_history.entry(*id).or_insert_with(Vec::new);
 
                 // Create a tombstone object (empty data) to mark deletion
-                let tombstone = TokenizedObject {
-                    id: *id,
-                    holder: UnitsObjectId::default(),
-                    token_type: TokenType::Native,
-                    token_manager: UnitsObjectId::default(),
-                    data: Vec::new(),
-                };
+                let tombstone = TokenizedObject::new(
+                    *id,
+                    UnitsObjectId::default(),
+                    TokenType::Native,
+                    UnitsObjectId::default(),
+                    Vec::new(),
+                );
 
                 history_vec.push((proof.slot, tombstone));
             }
@@ -1702,13 +1707,13 @@ mod tests {
         let id = UnitsObjectId::unique_id_for_tests();
         let holder = UnitsObjectId::unique_id_for_tests();
         let token_manager = UnitsObjectId::unique_id_for_tests();
-        let obj = TokenizedObject {
+        let obj = TokenizedObject::new(
             id,
             holder,
-            token_type: TokenType::Native,
+            TokenType::Native,
             token_manager,
-            data: vec![1, 2, 3, 4],
-        };
+            vec![1, 2, 3, 4],
+        );
 
         // Test set and get
         storage.set(&obj, None).unwrap();
@@ -1717,11 +1722,11 @@ mod tests {
         // Verify the retrieved object is the same as the one we set
         assert!(retrieved.is_some());
         let retrieved = retrieved.unwrap();
-        assert_eq!(retrieved.id, obj.id);
-        assert_eq!(retrieved.holder, obj.holder);
+        assert_eq!(*retrieved.id(), obj.base.id);
+        assert_eq!(*retrieved.holder(), obj.base.owner);
         assert_eq!(retrieved.token_type, obj.token_type);
         assert_eq!(retrieved.token_manager, obj.token_manager);
-        assert_eq!(retrieved.data, obj.data);
+        assert_eq!(retrieved.base.data, obj.base.data);
 
         // Test delete
         storage.delete(&id, None).unwrap();
@@ -1737,29 +1742,29 @@ mod tests {
         let storage = MockRocksDbStorage::new();
 
         // Create test objects
-        let obj1 = TokenizedObject {
-            id: UnitsObjectId::unique_id_for_tests(),
-            holder: UnitsObjectId::unique_id_for_tests(),
-            token_type: TokenType::Native,
-            token_manager: UnitsObjectId::unique_id_for_tests(),
-            data: vec![1, 2, 3, 4],
-        };
+        let obj1 = TokenizedObject::new(
+            UnitsObjectId::unique_id_for_tests(),
+            UnitsObjectId::unique_id_for_tests(),
+            TokenType::Native,
+            UnitsObjectId::unique_id_for_tests(),
+            vec![1, 2, 3, 4],
+        );
 
-        let obj2 = TokenizedObject {
-            id: UnitsObjectId::unique_id_for_tests(),
-            holder: UnitsObjectId::unique_id_for_tests(),
-            token_type: TokenType::Custodial,
-            token_manager: UnitsObjectId::unique_id_for_tests(),
-            data: vec![5, 6, 7, 8],
-        };
+        let obj2 = TokenizedObject::new(
+            UnitsObjectId::unique_id_for_tests(),
+            UnitsObjectId::unique_id_for_tests(),
+            TokenType::Custodial,
+            UnitsObjectId::unique_id_for_tests(),
+            vec![5, 6, 7, 8],
+        );
 
         // Store the objects
         storage.set(&obj1, None).unwrap();
         storage.set(&obj2, None).unwrap();
 
         // Get proofs for the objects
-        let proof1 = storage.get_proof(&obj1.id).unwrap();
-        let proof2 = storage.get_proof(&obj2.id).unwrap();
+        let proof1 = storage.get_proof(obj1.id()).unwrap();
+        let proof2 = storage.get_proof(obj2.id()).unwrap();
 
         assert!(proof1.is_some());
         assert!(proof2.is_some());
@@ -1768,12 +1773,12 @@ mod tests {
         let proof2 = proof2.unwrap();
 
         // Verify the proofs
-        assert!(storage.verify_proof(&obj1.id, &proof1).unwrap());
-        assert!(storage.verify_proof(&obj2.id, &proof2).unwrap());
+        assert!(storage.verify_proof(obj1.id(), &proof1).unwrap());
+        assert!(storage.verify_proof(obj2.id(), &proof2).unwrap());
 
         // Verify cross-proofs fail
-        assert!(!storage.verify_proof(&obj1.id, &proof2).unwrap());
-        assert!(!storage.verify_proof(&obj2.id, &proof1).unwrap());
+        assert!(!storage.verify_proof(obj1.id(), &proof2).unwrap());
+        assert!(!storage.verify_proof(obj2.id(), &proof1).unwrap());
 
         // Generate a state proof
         let state_proof = storage.generate_state_proof(None).unwrap();
@@ -1790,13 +1795,13 @@ mod tests {
         // Create and store test objects
         let mut objects = Vec::new();
         for i in 0..5 {
-            let obj = TokenizedObject {
-                id: UnitsObjectId::unique_id_for_tests(),
-                holder: UnitsObjectId::unique_id_for_tests(),
-                token_type: TokenType::Native,
-                token_manager: UnitsObjectId::unique_id_for_tests(),
-                data: vec![i as u8; 4],
-            };
+            let obj = TokenizedObject::new(
+                UnitsObjectId::unique_id_for_tests(),
+                UnitsObjectId::unique_id_for_tests(),
+                TokenType::Native,
+                UnitsObjectId::unique_id_for_tests(),
+                vec![i as u8; 4],
+            );
             objects.push(obj.clone());
             storage.set(&obj, None).unwrap();
         }
@@ -1810,11 +1815,11 @@ mod tests {
             found_objects += 1;
             let obj = result.unwrap();
             let found = objects.iter().any(|test_obj| {
-                test_obj.id == obj.id
-                    && test_obj.holder == obj.holder
+                *test_obj.id() == *obj.id()
+                    && *test_obj.holder() == *obj.holder()
                     && test_obj.token_type == obj.token_type
                     && test_obj.token_manager == obj.token_manager
-                    && test_obj.data == obj.data
+                    && test_obj.base.data == obj.base.data
             });
             assert!(found, "Iterator returned an unexpected object");
         }
@@ -1832,26 +1837,26 @@ mod tests {
         let id = UnitsObjectId::unique_id_for_tests();
         let holder = UnitsObjectId::unique_id_for_tests();
         let token_manager = UnitsObjectId::unique_id_for_tests();
-        let mut obj = TokenizedObject {
+        let mut obj = TokenizedObject::new(
             id,
             holder,
-            token_type: TokenType::Native,
+            TokenType::Native,
             token_manager,
-            data: vec![1, 2, 3, 4],
-        };
+            vec![1, 2, 3, 4],
+        );
 
         // Store the object initially - this will create the first proof
         let proof1 = storage.set(&obj, None).unwrap();
         println!("Initial proof slot: {}", proof1.slot);
 
         // Modify and store the object again to create a chain of proofs
-        obj.data = vec![5, 6, 7, 8];
+        obj.base.data = vec![5, 6, 7, 8];
         let proof2 = storage.set(&obj, None).unwrap();
         println!("Second proof slot: {}", proof2.slot);
         println!("Second proof prev_hash: {:?}", proof2.prev_proof_hash);
 
         // Modify and store once more
-        obj.data = vec![9, 10, 11, 12];
+        obj.base.data = vec![9, 10, 11, 12];
         let proof3 = storage.set(&obj, None).unwrap();
         println!("Third proof slot: {}", proof3.slot);
         println!("Third proof prev_hash: {:?}", proof3.prev_proof_hash);

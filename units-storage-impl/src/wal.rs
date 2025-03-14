@@ -220,13 +220,13 @@ mod tests {
         let holder = UnitsObjectId::random();
         let token_manager = UnitsObjectId::random();
 
-        TokenizedObject {
+        TokenizedObject::new(
             id,
             holder,
-            token_type: TokenType::Native,
+            TokenType::Native,
             token_manager,
-            data: vec![1, 2, 3, 4],
-        }
+            vec![1, 2, 3, 4],
+        )
     }
 
     // Helper to create a test proof
@@ -283,8 +283,8 @@ mod tests {
 
         // Verify the results
         assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].object.id, obj1.id);
-        assert_eq!(entries[1].object.id, obj2.id);
+        assert_eq!(entries[0].object.id(), obj1.id());
+        assert_eq!(entries[1].object.id(), obj2.id());
     }
 
     #[test]
@@ -314,6 +314,6 @@ mod tests {
 
         // Verify the results
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].object.id, obj.id);
+        assert_eq!(entries[0].object.id(), obj.id());
     }
 }

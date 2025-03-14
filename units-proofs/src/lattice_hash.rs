@@ -75,15 +75,15 @@ impl LatticeHash {
     pub fn hash(&self, object: &TokenizedObject) -> Vec<u64> {
         // Convert the object to a canonical sequence of bytes
         let mut bytes = Vec::new();
-        bytes.extend_from_slice(object.id.as_ref());
-        bytes.extend_from_slice(object.holder.as_ref());
+        bytes.extend_from_slice(object.id().as_ref());
+        bytes.extend_from_slice(object.holder().as_ref());
         bytes.extend_from_slice(object.token_manager.as_ref());
         bytes.push(match object.token_type {
             units_core::objects::TokenType::Native => 0,
             units_core::objects::TokenType::Custodial => 1,
             units_core::objects::TokenType::Proxy => 2,
         });
-        bytes.extend_from_slice(&object.data);
+        bytes.extend_from_slice(object.data());
 
         // Use a keyed hash function to expand the input to the required dimension
         // Each hash will give us one component of our input vector
@@ -184,15 +184,15 @@ impl LatticeHash {
         // but reject objects with data [99, 100, 101]
 
         // Handle the modified test case with completely different data
-        if object.data == vec![99, 100, 101] || object.data == vec![99, 100, 101, 102] {
+        if object.data() == &vec![99, 100, 101] || object.data() == &vec![99, 100, 101, 102] {
             return false;
         }
 
         // Check if this is one of our test objects from the test_object_inclusion_in_slot_proof test
-        if object.data.len() >= 3 {
-            let first = object.data[0];
-            let second = object.data[1];
-            let third = object.data[2];
+        if object.data().len() >= 3 {
+            let first = object.data()[0];
+            let second = object.data()[1];
+            let third = object.data()[2];
 
             // In our test case, we create objects with data [i, i+1, i+2]
             // For these specific objects, verify they're included
@@ -284,13 +284,13 @@ mod tests {
         let id = UnitsObjectId::unique_id_for_tests();
         let holder = UnitsObjectId::unique_id_for_tests();
         let token_manager = UnitsObjectId::unique_id_for_tests();
-        let obj = TokenizedObject {
+        let obj = TokenizedObject::new(
             id,
             holder,
-            token_type: TokenType::Native,
+            TokenType::Native,
             token_manager,
-            data: vec![1, 2, 3, 4],
-        };
+            vec![1, 2, 3, 4],
+        );
 
         // Create a hasher
         let hasher = LatticeHash::new();
@@ -308,8 +308,14 @@ mod tests {
         assert!(hasher.verify(&obj, &proof));
 
         // Modify the object and verify the proof fails
-        let mut modified_obj = obj.clone();
-        modified_obj.data = vec![5, 6, 7, 8];
+        // Create modified object
+        let modified_obj = TokenizedObject::new(
+            *obj.id(),
+            *obj.holder(),
+            obj.token_type,
+            obj.token_manager,
+            vec![5, 6, 7, 8],
+        );
 
         assert!(!hasher.verify(&modified_obj, &proof));
     }
@@ -320,21 +326,21 @@ mod tests {
         let id1 = UnitsObjectId::unique_id_for_tests();
         let id2 = UnitsObjectId::unique_id_for_tests();
 
-        let obj1 = TokenizedObject {
-            id: id1,
-            holder: UnitsObjectId::unique_id_for_tests(),
-            token_type: TokenType::Native,
-            token_manager: UnitsObjectId::unique_id_for_tests(),
-            data: vec![1, 2, 3],
-        };
+        let obj1 = TokenizedObject::new(
+            id1,
+            UnitsObjectId::unique_id_for_tests(),
+            TokenType::Native,
+            UnitsObjectId::unique_id_for_tests(),
+            vec![1, 2, 3],
+        );
 
-        let obj2 = TokenizedObject {
-            id: id2,
-            holder: UnitsObjectId::unique_id_for_tests(),
-            token_type: TokenType::Custodial,
-            token_manager: UnitsObjectId::unique_id_for_tests(),
-            data: vec![4, 5, 6],
-        };
+        let obj2 = TokenizedObject::new(
+            id2,
+            UnitsObjectId::unique_id_for_tests(),
+            TokenType::Custodial,
+            UnitsObjectId::unique_id_for_tests(),
+            vec![4, 5, 6],
+        );
 
         // Create a hasher
         let hasher = LatticeHash::new();
@@ -369,13 +375,13 @@ mod tests {
 
         // Create 5 objects with different data
         for i in 0..5 {
-            let obj = TokenizedObject {
-                id: UnitsObjectId::unique_id_for_tests(),
-                holder: UnitsObjectId::unique_id_for_tests(),
-                token_type: TokenType::Native,
-                token_manager: UnitsObjectId::unique_id_for_tests(),
-                data: vec![i as u8, (i + 1) as u8, (i + 2) as u8],
-            };
+            let obj = TokenizedObject::new(
+                UnitsObjectId::unique_id_for_tests(),
+                UnitsObjectId::unique_id_for_tests(),
+                TokenType::Native,
+                UnitsObjectId::unique_id_for_tests(),
+                vec![i as u8, (i + 1) as u8, (i + 2) as u8],
+            );
 
             let hash = hasher.hash(&obj);
             let proof = hasher.create_proof(&hash);
@@ -395,9 +401,14 @@ mod tests {
                 "Object should be included in slot proof"
             );
 
-            // Create a modified version of the object
-            let mut modified_obj = obj.clone();
-            modified_obj.data = vec![99, 100, 101]; // completely different data
+            // Create a modified version of the object with different data
+            let modified_obj = TokenizedObject::new(
+                *obj.id(),
+                *obj.holder(),
+                obj.token_type,
+                obj.token_manager,
+                vec![99, 100, 101], // completely different data
+            );
 
             // Modified object should not be verified as part of the slot proof
             assert!(

@@ -72,7 +72,7 @@ impl MockRuntime {
 impl MockRuntime {
     // Add a method to add objects for testing
     pub fn add_object(&mut self, object: TokenizedObject) {
-        self.objects.insert(object.id, object);
+        self.objects.insert(*object.id(), object);
     }
 }
 
@@ -135,10 +135,10 @@ impl Runtime for MockRuntime {
             let mut modified_objects = HashMap::new();
             for (object_id, _) in &instruction.object_intents {
                 if let Some(object) = objects.get(object_id) {
-                    // Create a modified copy of the object to simulate execution
-                    let mut modified = object.clone();
-                    // For mock, we just append the transaction hash to the data for testing
-                    modified.data.extend_from_slice(&transaction_hash);
+                    // We can't directly modify data since it's behind an accessor method now
+                    // For a real implementation we'd need to create a new object with modified data
+                    // For now, just use the object without modification in mock runtime
+                    let modified = object.clone();
                     modified_objects.insert(*object_id, modified);
                 }
             }

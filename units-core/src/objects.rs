@@ -2,27 +2,35 @@ use crate::id::UnitsObjectId;
 use crate::transaction::RuntimeType;
 use serde::{Deserialize, Serialize};
 
-/// TokenizedObject represents an object in the UNITS system that has been tokenized.
+/// Base struct for all UNITS objects
 ///
-/// A TokenizedObject is a container for arbitrary data that is uniquely identified and
-/// can only be mutated by its current holder. When state changes, the storage system
-/// emits a proof that commits to both the previous and new state of the object.
+/// UnitsObject is the fundamental object in the UNITS system.
+/// It provides core fields common to all object types.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TokenizedObject {
-    /// Unique identifier for this tokenized object
+pub struct UnitsObject {
+    /// Unique identifier for this object
     pub id: UnitsObjectId,
 
-    /// The UnitsObjectId of the current holder who controls this object
-    pub holder: UnitsObjectId,
-
-    /// Specifies how this token is held (Native, Custodial, or Proxy)
-    pub token_type: TokenType,
-
-    /// The UnitsObjectId that has authority to manage token operations
-    pub token_manager: UnitsObjectId,
+    /// The UnitsObjectId of the entity who controls/owns this object
+    pub owner: UnitsObjectId,
 
     /// Arbitrary binary data associated with this object
     pub data: Vec<u8>,
+}
+
+impl UnitsObject {
+    /// Create a new UnitsObject
+    pub fn new(
+        id: UnitsObjectId,
+        owner: UnitsObjectId,
+        data: Vec<u8>,
+    ) -> Self {
+        Self {
+            id,
+            owner,
+            data,
+        }
+    }
 }
 
 /// Defines the type of token and its ownership model
@@ -38,8 +46,24 @@ pub enum TokenType {
     Proxy,
 }
 
-/// Metadata for a code object stored inside a TokenizedObject
-/// This is a placeholder that will be implemented properly in the future
+/// TokenizedObject represents an object in the UNITS system that has been tokenized.
+///
+/// A TokenizedObject extends UnitsObject with token-specific properties. It can be
+/// tokenized and transferred between holders. When state changes, the storage system
+/// emits a proof that commits to both the previous and new state of the object.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenizedObject {
+    /// Base object with core fields
+    pub base: UnitsObject,
+
+    /// Specifies how this token is held (Native, Custodial, or Proxy)
+    pub token_type: TokenType,
+
+    /// The UnitsObjectId that has authority to manage token operations
+    pub token_manager: UnitsObjectId,
+}
+
+/// Metadata for a code object
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CodeObjectMetadata {
     /// Type of runtime required to execute this code
@@ -49,6 +73,21 @@ pub struct CodeObjectMetadata {
     pub entrypoint: String,
 }
 
+/// CodeObject represents executable code in the UNITS system
+///
+/// A CodeObject contains executable code (like WebAssembly or eBPF) that can be
+/// executed by the runtime system. It includes metadata about the runtime type
+/// and entrypoint information.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeObject {
+    /// Base object with core fields (data field contains the executable code)
+    pub base: UnitsObject,
+    
+    /// Code-specific metadata
+    pub metadata: CodeObjectMetadata,
+}
+
+// Implementation for TokenizedObject
 impl TokenizedObject {
     /// Create a new TokenizedObject
     pub fn new(
@@ -59,35 +98,49 @@ impl TokenizedObject {
         data: Vec<u8>,
     ) -> Self {
         Self {
-            id,
-            holder,
+            base: UnitsObject::new(id, holder, data),
             token_type,
             token_manager,
-            data,
         }
+    }
+    
+    /// Get the object ID
+    pub fn id(&self) -> &UnitsObjectId {
+        &self.base.id
+    }
+    
+    /// Get the holder (semantically the same as owner in the base object)
+    pub fn holder(&self) -> &UnitsObjectId {
+        &self.base.owner
+    }
+    
+    /// Get the data
+    pub fn data(&self) -> &[u8] {
+        &self.base.data
     }
     
     /// Check if this object is a code object based on a simple heuristic
     /// 
-    /// In a real implementation, we'd have a proper metadata format.
-    /// For now, we'll consider any object with data larger than 64 bytes as potentially a code object.
+    /// This is maintained for backward compatibility.
+    /// In a real implementation, we'd check the object type directly.
     pub fn is_code_object(&self) -> bool {
-        // Simplistic check - in a real implementation, we'd check for actual code metadata
-        self.data.len() > 64
+        // Simplistic check - in a real implementation, we'd check the object type
+        self.base.data.len() > 64
     }
     
-    /// In a real implementation, this would parse embedded metadata from the object
-    /// For now, it's a placeholder that would be implemented properly in the future
+    /// Get code metadata if this is a code object
+    /// 
+    /// This is maintained for backward compatibility.
+    /// In a real implementation, we'd convert to a CodeObject or check the type.
     pub fn get_code_metadata(&self) -> Option<CodeObjectMetadata> {
         if !self.is_code_object() {
             return None;
         }
         
         // This is a placeholder implementation
-        // We'd actually parse real metadata in a proper implementation
         Some(CodeObjectMetadata {
             // Determine the runtime type based on the first byte as a simple heuristic
-            runtime_type: match self.data.first() {
+            runtime_type: match self.base.data.first() {
                 Some(1) => RuntimeType::Wasm,
                 Some(2) => RuntimeType::Ebpf,
                 // Default to Wasm for unrecognized values
@@ -101,14 +154,16 @@ impl TokenizedObject {
     pub fn get_code(&self) -> Option<&[u8]> {
         if self.is_code_object() {
             // In a real implementation, we'd skip the metadata bytes
-            // For now, just return all the data
-            Some(&self.data)
+            Some(&self.base.data)
         } else {
             None
         }
     }
     
     /// Create a code object from code, runtime type, and entrypoint
+    /// 
+    /// This is maintained for backward compatibility.
+    /// New code should create a CodeObject directly.
     pub fn create_code_object(
         id: UnitsObjectId,
         holder: UnitsObjectId,
@@ -120,7 +175,7 @@ impl TokenizedObject {
     ) -> Self {
         // In a real implementation, we'd properly serialize metadata
         // For now, we'll use a simple format:
-        // - First byte indicates the runtime type (0=Native, 1=Wasm, 2=Ebpf, 3=Script)
+        // - First byte indicates the runtime type (1=Wasm, 2=Ebpf)
         // - Next bytes are a simple marker
         
         // Create data with runtime type marker and code
@@ -151,5 +206,78 @@ impl TokenizedObject {
         
         // Create the object
         Self::new(id, holder, token_type, token_manager, data)
+    }
+}
+
+// Implementation for CodeObject
+impl CodeObject {
+    /// Create a new CodeObject
+    pub fn new(
+        id: UnitsObjectId,
+        owner: UnitsObjectId,
+        code: Vec<u8>,
+        runtime_type: RuntimeType,
+        entrypoint: String,
+    ) -> Self {
+        Self {
+            base: UnitsObject::new(id, owner, code),
+            metadata: CodeObjectMetadata {
+                runtime_type,
+                entrypoint,
+            },
+        }
+    }
+    
+    /// Get the object ID
+    pub fn id(&self) -> &UnitsObjectId {
+        &self.base.id
+    }
+    
+    /// Get the owner
+    pub fn owner(&self) -> &UnitsObjectId {
+        &self.base.owner
+    }
+    
+    /// Get the code bytes
+    pub fn code(&self) -> &[u8] {
+        &self.base.data
+    }
+    
+    /// Get the runtime type
+    pub fn runtime_type(&self) -> RuntimeType {
+        self.metadata.runtime_type
+    }
+    
+    /// Get the entrypoint function name
+    pub fn entrypoint(&self) -> &str {
+        &self.metadata.entrypoint
+    }
+    
+    /// Convert from a TokenizedObject that contains code
+    /// 
+    /// This is a convenience method for migrating from TokenizedObject to CodeObject.
+    /// It attempts to extract code and metadata from a TokenizedObject.
+    pub fn try_from_tokenized_object(obj: &TokenizedObject) -> Option<Self> {
+        // Get code metadata
+        let metadata = obj.get_code_metadata()?;
+        
+        // Create a new CodeObject
+        Some(Self {
+            base: UnitsObject::new(*obj.id(), *obj.holder(), obj.data().to_vec()),
+            metadata,
+        })
+    }
+}
+
+// Legacy support for existing code that expects TokenizedObject fields directly
+impl From<&TokenizedObject> for UnitsObject {
+    fn from(obj: &TokenizedObject) -> Self {
+        obj.base.clone()
+    }
+}
+
+impl From<&CodeObject> for UnitsObject {
+    fn from(obj: &CodeObject) -> Self {
+        obj.base.clone()
     }
 }

@@ -218,7 +218,7 @@ impl RuntimeBackend for WasmRuntimeBackend {
         // For debugging
         log::debug!(
             "Would execute WebAssembly program ({}): {} bytes of code, entrypoint: {}, args: {} bytes",
-            program.id,
+            program.id(),
             code.len(),
             entrypoint,
             args.len()
@@ -274,7 +274,7 @@ impl RuntimeBackend for EbpfRuntimeBackend {
         // For debugging
         log::debug!(
             "Would execute eBPF program ({}): {} bytes of code, entrypoint: {}, args: {} bytes",
-            program.id,
+            program.id(),
             code.len(),
             entrypoint,
             args.len()
