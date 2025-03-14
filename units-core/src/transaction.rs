@@ -43,7 +43,7 @@ impl Default for CommitmentLevel {
 pub enum RuntimeType {
     /// WebAssembly virtual machine (using wasmtime, wasmer, etc.)
     Wasm,
-    /// eBPF virtual machine (using rbpf or similar)
+    /// eBPF virtual machine
     Ebpf,
 }
 
@@ -113,14 +113,6 @@ impl Instruction {
         Self::new(params, RuntimeType::Wasm, object_intents, code_object_id)
     }
 
-    /// Create a new eBPF instruction
-    pub fn ebpf(
-        params: Vec<u8>,
-        object_intents: Vec<(UnitsObjectId, AccessIntent)>,
-        code_object_id: UnitsObjectId,
-    ) -> Self {
-        Self::new(params, RuntimeType::Ebpf, object_intents, code_object_id)
-    }
 
     /// Acquire all locks needed for this instruction
     ///

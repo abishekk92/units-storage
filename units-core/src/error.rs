@@ -77,12 +77,6 @@ impl From<bincode::Error> for StorageError {
     }
 }
 
-#[cfg(feature = "rocksdb")]
-impl From<rocksdb::Error> for StorageError {
-    fn from(err: rocksdb::Error) -> Self {
-        StorageError::Database(err.to_string())
-    }
-}
 
 #[cfg(feature = "sqlite")]
 impl From<sqlx::Error> for StorageError {

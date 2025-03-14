@@ -5,7 +5,7 @@ members = [
     "units-proofs",
     "units-storage-impl",
     "units-runtime",
-    # "units",
+    "units",
 ]
 
 [workspace.package]

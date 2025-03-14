@@ -93,10 +93,7 @@ impl SqliteStorage {
         }
 
         // Initialize the lock manager
-        let lock_manager = match SqliteLockManager::new(pool.clone(), rt.clone()) {
-            Ok(lm) => lm,
-            Err(e) => return Err(format!("Failed to initialize lock manager: {}", e)),
-        };
+        let lock_manager = SqliteLockManager::new(pool.clone());
 
         Ok(Self {
             pool,
