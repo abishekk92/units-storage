@@ -162,19 +162,17 @@ impl RuntimeBackend for WasmtimeRuntimeBackend {
             ),
         };
         
-        // Get the metadata to find the entrypoint
-        let metadata = match code_object.get_code_metadata() {
-            Some(metadata) => metadata,
-            None => return InstructionResult::Error(
-                format!("Missing metadata in code object: {}", instruction.code_object_id)
-            ),
-        };
+        // Get the entrypoint from the context if provided, otherwise use the standard one
+        let entrypoint = context.entrypoint.as_deref()
+            .unwrap_or(units_core::transaction::STANDARD_ENTRYPOINT);
+        
+        debug!("Using entrypoint: {}", entrypoint);
         
         // Execute the WebAssembly module using the code from the code object
         // and parameters from the instruction
         match self.execute_module(
             code,
-            &metadata.entrypoint,
+            entrypoint,
             &instruction.params, // Use instruction params as args
             objects,
         ) {

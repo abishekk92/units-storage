@@ -1,8 +1,8 @@
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use crate::id::UnitsObjectId;
 use crate::locks::{AccessIntent, ObjectLockGuard, PersistentLockManager};
 use crate::objects::TokenizedObject;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Transaction hash type (32-byte array)
 pub type TransactionHash = [u8; 32];
@@ -35,35 +35,15 @@ impl Default for CommitmentLevel {
     }
 }
 
-/// Identifies the type of instruction data and corresponding runtime backend
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum InstructionType {
-    /// Raw binary data for native execution
-    Binary,
-    /// WebAssembly module
-    Wasm,
-    /// eBPF bytecode
-    Ebpf,
-    /// JSON-encoded instruction
-    Json,
-}
-
-impl Default for InstructionType {
-    fn default() -> Self {
-        InstructionType::Binary
-    }
-}
-
-/// Identifies the type of runtime needed to execute program code
-/// 
-/// We only support runtimes with proper isolation guarantees:
-/// - WebAssembly (using wasmtime, wasmer, etc.)
-/// - eBPF (using rbpf or similar)
+/// Identifies the runtime environment for program execution
+///
+/// This represents the type of runtime needed to execute program code.
+/// We only support runtimes with proper isolation guarantees.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RuntimeType {
-    /// WebAssembly virtual machine
+    /// WebAssembly virtual machine (using wasmtime, wasmer, etc.)
     Wasm,
-    /// eBPF virtual machine
+    /// eBPF virtual machine (using rbpf or similar)
     Ebpf,
 }
 
@@ -73,72 +53,96 @@ impl Default for RuntimeType {
     }
 }
 
-/// Mapping between instruction types and runtime types
-impl From<InstructionType> for RuntimeType {
-    fn from(instruction_type: InstructionType) -> Self {
-        match instruction_type {
-            // Only support runtime types with proper isolation
-            InstructionType::Wasm => RuntimeType::Wasm,
-            InstructionType::Ebpf => RuntimeType::Ebpf,
-            // Other instruction types map to WebAssembly by default
-            _ => RuntimeType::Wasm,
-        }
-    }
-}
+/// Standard entrypoint name used across all runtimes
+///
+/// Using a consistent entrypoint name across all runtimes ensures
+/// that programs can be executed seamlessly regardless of runtime type.
+pub const STANDARD_ENTRYPOINT: &str = "main";
 
 /// A structure representing an instruction within a transaction
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Instruction {
     /// Parameters for this instruction (arguments, not code)
     pub params: Vec<u8>,
-    
-    /// Type of instruction, used to select the appropriate runtime backend
-    pub instruction_type: InstructionType,
+
+    /// Runtime type for this instruction (added for consistency across backends)
+    /// When not explicitly set, it's derived from instruction_type
+    #[serde(default = "Instruction::default_runtime_type")]
+    pub runtime_type: RuntimeType,
 
     /// The objects this instruction intends to access and their access intents
     pub object_intents: Vec<(UnitsObjectId, AccessIntent)>,
-    
+
     /// The ID of the code object to execute
     /// All code execution must come from a verified code object for security
     pub code_object_id: UnitsObjectId,
+
+    /// Custom entrypoint name (if not using the standard entrypoint)
+    /// If None, STANDARD_ENTRYPOINT ("main") will be used
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub custom_entrypoint: Option<String>,
 }
 
 impl Instruction {
-    /// Create a new instruction with the specified type
+    /// Default runtime type derived from instruction_type
+    fn default_runtime_type() -> RuntimeType {
+        RuntimeType::Wasm
+    }
+
+    /// Create a new instruction with the specified runtime type
     pub fn new(
-        params: Vec<u8>, 
-        instruction_type: InstructionType,
+        params: Vec<u8>,
+        runtime_type: RuntimeType,
         object_intents: Vec<(UnitsObjectId, AccessIntent)>,
         code_object_id: UnitsObjectId,
     ) -> Self {
         Self {
             params,
-            instruction_type,
+            runtime_type,
             object_intents,
             code_object_id,
+            custom_entrypoint: None,
         }
     }
-    
-    /// Create a new binary instruction
-    pub fn binary(params: Vec<u8>, object_intents: Vec<(UnitsObjectId, AccessIntent)>, code_object_id: UnitsObjectId) -> Self {
-        Self::new(params, InstructionType::Binary, object_intents, code_object_id)
+
+    /// Create a new instruction with a custom entrypoint
+    pub fn with_custom_entrypoint(
+        params: Vec<u8>,
+        runtime_type: RuntimeType,
+        object_intents: Vec<(UnitsObjectId, AccessIntent)>,
+        code_object_id: UnitsObjectId,
+        entrypoint: String,
+    ) -> Self {
+        let mut instruction = Self::new(params, runtime_type, object_intents, code_object_id);
+        instruction.custom_entrypoint = Some(entrypoint);
+        instruction
     }
-    
+
+    /// Get the effective entrypoint for this instruction
+    pub fn entrypoint(&self) -> &str {
+        self.custom_entrypoint
+            .as_deref()
+            .unwrap_or(STANDARD_ENTRYPOINT)
+    }
+
     /// Create a new WebAssembly instruction
-    pub fn wasm(params: Vec<u8>, object_intents: Vec<(UnitsObjectId, AccessIntent)>, code_object_id: UnitsObjectId) -> Self {
-        Self::new(params, InstructionType::Wasm, object_intents, code_object_id)
+    pub fn wasm(
+        params: Vec<u8>,
+        object_intents: Vec<(UnitsObjectId, AccessIntent)>,
+        code_object_id: UnitsObjectId,
+    ) -> Self {
+        Self::new(params, RuntimeType::Wasm, object_intents, code_object_id)
     }
-    
+
     /// Create a new eBPF instruction
-    pub fn ebpf(params: Vec<u8>, object_intents: Vec<(UnitsObjectId, AccessIntent)>, code_object_id: UnitsObjectId) -> Self {
-        Self::new(params, InstructionType::Ebpf, object_intents, code_object_id)
+    pub fn ebpf(
+        params: Vec<u8>,
+        object_intents: Vec<(UnitsObjectId, AccessIntent)>,
+        code_object_id: UnitsObjectId,
+    ) -> Self {
+        Self::new(params, RuntimeType::Ebpf, object_intents, code_object_id)
     }
-    
-    /// Create a new JSON instruction
-    pub fn json(json: String, object_intents: Vec<(UnitsObjectId, AccessIntent)>, code_object_id: UnitsObjectId) -> Self {
-        Self::new(json.into_bytes(), InstructionType::Json, object_intents, code_object_id)
-    }
-    
+
     /// Acquire all locks needed for this instruction
     ///
     /// This acquires locks for all objects according to their access intents.
@@ -195,7 +199,9 @@ impl Instruction {
     ) -> Vec<ObjectLockGuard<'static, M>> {
         self.object_intents
             .iter()
-            .map(|(object_id, intent)| intent.create_in_memory_lock::<M>(object_id, transaction_hash))
+            .map(|(object_id, intent)| {
+                intent.create_in_memory_lock::<M>(object_id, transaction_hash)
+            })
             .collect()
     }
 }
@@ -333,7 +339,9 @@ impl Transaction {
 
     /// Create in-memory locks for testing
     #[cfg(test)]
-    pub fn create_in_memory_locks<M: PersistentLockManager>(&self) -> Vec<ObjectLockGuard<'static, M>> {
+    pub fn create_in_memory_locks<M: PersistentLockManager>(
+        &self,
+    ) -> Vec<ObjectLockGuard<'static, M>> {
         let mut locks = Vec::new();
         let mut locked_objects = std::collections::HashMap::new();
 

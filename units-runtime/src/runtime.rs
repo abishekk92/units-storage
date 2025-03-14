@@ -1,13 +1,13 @@
 // Import types from units-core
+use crate::runtime_backend::{ExecutionError, InstructionContext, RuntimeBackendManager};
+use std::collections::HashMap;
 pub use units_core::id::UnitsObjectId;
 pub use units_core::locks::AccessIntent;
 pub use units_core::objects::TokenizedObject;
 pub use units_core::transaction::{
-    CommitmentLevel, ConflictResult, Instruction, InstructionType, RuntimeType, Transaction, TransactionEffect,
+    CommitmentLevel, ConflictResult, Instruction, RuntimeType, Transaction, TransactionEffect,
     TransactionHash, TransactionReceipt,
 };
-use crate::runtime_backend::{RuntimeBackendManager, ExecutionError, InstructionContext};
-use std::collections::HashMap;
 
 // Moved UnitsReceiptIterator and TransactionReceiptStorage to units-storage-impl::storage_traits
 
@@ -16,15 +16,15 @@ use std::collections::HashMap;
 pub enum InstructionReference {
     /// Direct instruction with instruction data
     Direct(Instruction),
-    
+
     /// Program call to execute a previously deployed program
     ProgramCall {
         /// The program object ID to execute
         program_id: UnitsObjectId,
-        
+
         /// Arguments to pass to the program
         args: Vec<u8>,
-        
+
         /// Object access intents for this call
         object_intents: Vec<(UnitsObjectId, AccessIntent)>,
     },
@@ -34,7 +34,7 @@ pub enum InstructionReference {
 pub trait Runtime {
     /// Get the runtime backend manager used by this runtime
     fn backend_manager(&self) -> &RuntimeBackendManager;
-    
+
     /// Check for potential conflicts with pending or recent transactions
     ///
     /// This allows detecting conflicts before executing a transaction.
@@ -78,10 +78,11 @@ pub trait Runtime {
             program_id: None,
             entrypoint: None,
         };
-        
-        self.backend_manager().execute_instruction(instruction, context)
+
+        self.backend_manager()
+            .execute_instruction(instruction, context)
     }
-    
+
     /// Execute a program call instruction that references a previously deployed program
     ///
     /// # Parameters
@@ -104,11 +105,11 @@ pub trait Runtime {
         // Create an instruction with the program args as parameters
         let instruction = Instruction::new(
             args.to_vec(),
-            InstructionType::Binary, // The actual type doesn't matter here
+            RuntimeType::Wasm, // Default to Wasm runtime
             vec![],
             *program_id, // Use the program ID as the code object ID
         );
-        
+
         let context = InstructionContext {
             transaction_hash,
             objects,
@@ -116,10 +117,11 @@ pub trait Runtime {
             program_id: None, // Will be set by execute_program_call
             entrypoint: None, // Will be set by execute_program_call
         };
-        
-        self.backend_manager().execute_program_call(program_id, &instruction, context)
+
+        self.backend_manager()
+            .execute_program_call(program_id, &instruction, context)
     }
-    
+
     /// Execute a transaction and return a transaction receipt with proofs
     fn execute_transaction(&self, transaction: Transaction) -> TransactionReceipt;
 
