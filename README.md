@@ -49,6 +49,8 @@ The project is organized as a Cargo workspace with the following crates:
 
 ## Architecture
 
+For detailed architecture documentation, see [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ### Proof System
 
 The proof system is designed to provide cryptographic guarantees about object states and their history:
