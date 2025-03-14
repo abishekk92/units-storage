@@ -3,7 +3,6 @@ pub mod mock_runtime;
 pub mod runtime;
 pub mod runtime_backend;
 pub mod verification;
-pub mod wasmtime_backend;
 
 // Re-export the main types for convenience
 pub use runtime::{Runtime, TransactionEffect, TransactionReceipt};
@@ -26,10 +25,6 @@ pub use runtime_backend::{
 pub use host_environment::{
     create_standard_host_environment, HostEnvironment, StandardHostEnvironment,
 };
-
-// Re-export Wasmtime backend with feature flag
-#[cfg(feature = "wasmtime-backend")]
-pub use wasmtime_backend::{create_wasmtime_backend, WasmtimeRuntimeBackend};
 
 // Re-export MockRuntime and InMemoryReceiptStorage for testing
 pub use mock_runtime::{InMemoryReceiptStorage, MockRuntime};

@@ -1940,6 +1940,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "units-runtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "chrono",
+ "curve25519-dalek",
+ "log",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "units-core",
+ "units-proofs",
+ "units-storage-impl",
+]
+
+[[package]]
 name = "units-storage-impl"
 version = "0.1.0"
 dependencies = [

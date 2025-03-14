@@ -124,13 +124,10 @@ impl RuntimeBackendManager {
             .ok_or_else(|| ExecutionError::ProgramNotFound(*program_id))?
             .clone();
 
-        // Extract the code metadata from the program object
-        let metadata = program
-            .get_code_metadata()
+        // Check if this is a code object and get its runtime type
+        let runtime_type = program
+            .runtime_type()
             .ok_or_else(|| ExecutionError::InvalidProgram(*program_id))?;
-
-        // Get the runtime type from the metadata
-        let runtime_type = metadata.runtime_type;
 
         let entrypoint = instruction.entrypoint(); // This will return STANDARD_ENTRYPOINT
 
@@ -159,14 +156,6 @@ impl RuntimeBackendManager {
 
         // Add eBPF backend
         manager.register_backend(Arc::new(EbpfRuntimeBackend::new()));
-
-        // When the wasmtime-backend feature is enabled, register the Wasmtime backend
-        #[cfg(feature = "wasmtime-backend")]
-        {
-            use crate::wasmtime_backend::create_wasmtime_backend;
-            // Replace the mock Wasm backend with the real Wasmtime implementation
-            manager.register_backend(create_wasmtime_backend());
-        }
 
         manager
     }
@@ -202,11 +191,12 @@ impl RuntimeBackend for WasmRuntimeBackend {
         args: &[u8],
         _context: InstructionContext<'a>,
     ) -> InstructionResult {
-        // Get the program code
-        let code = match program.get_code() {
-            Some(code) => code,
-            None => return InstructionResult::Error("Invalid program object".to_string()),
-        };
+        // Get the program code - in the new UnitsObject model, code is stored in the data field
+        // Check if this is a code object
+        if !program.is_code() {
+            return InstructionResult::Error("Invalid program object - not a code object".to_string());
+        }
+        let code = program.data();
 
         // In a real implementation, we would:
         // 1. Instantiate a WebAssembly module from the code
@@ -259,11 +249,12 @@ impl RuntimeBackend for EbpfRuntimeBackend {
         args: &[u8],
         _context: InstructionContext<'a>,
     ) -> InstructionResult {
-        // Get the program code
-        let code = match program.get_code() {
-            Some(code) => code,
-            None => return InstructionResult::Error("Invalid program object".to_string()),
-        };
+        // Get the program code - in the new UnitsObject model, code is stored in the data field
+        // Check if this is a code object
+        if !program.is_code() {
+            return InstructionResult::Error("Invalid program object - not a code object".to_string());
+        }
+        let code = program.data();
 
         // In a real implementation, we would:
         // 1. Load the eBPF bytecode from the code

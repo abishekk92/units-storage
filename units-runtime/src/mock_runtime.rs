@@ -3,7 +3,7 @@ use std::sync::Mutex;
 
 use units_core::error::StorageError;
 use units_core::id::UnitsObjectId;
-use units_core::objects::TokenizedObject;
+use units_core::objects::UnitsObject;
 use units_core::scheduler::{BasicConflictChecker, ConflictChecker};
 use units_core::transaction::{
     CommitmentLevel, ConflictResult, Transaction, TransactionEffect, TransactionHash,
@@ -26,7 +26,7 @@ pub struct MockRuntime {
     /// The runtime backend manager for executing instructions
     backend_manager: RuntimeBackendManager,
     /// Mock objects in memory (used for testing)
-    objects: HashMap<UnitsObjectId, TokenizedObject>,
+    objects: HashMap<UnitsObjectId, UnitsObject>,
 }
 
 impl MockRuntime {
@@ -71,8 +71,8 @@ impl MockRuntime {
 
 impl MockRuntime {
     // Add a method to add objects for testing
-    pub fn add_object(&mut self, object: TokenizedObject) {
-        self.objects.insert(*object.id(), object);
+    pub fn add_object(&mut self, object: UnitsObject) {
+        self.objects.insert(object.id, object);
     }
 }
 

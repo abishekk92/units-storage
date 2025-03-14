@@ -3,7 +3,7 @@ use crate::runtime_backend::{ExecutionError, InstructionContext, RuntimeBackendM
 use std::collections::HashMap;
 pub use units_core::id::UnitsObjectId;
 pub use units_core::locks::AccessIntent;
-pub use units_core::objects::TokenizedObject;
+pub use units_core::objects::UnitsObject;
 pub use units_core::transaction::{
     CommitmentLevel, ConflictResult, Instruction, RuntimeType, Transaction, TransactionEffect,
     TransactionHash, TransactionReceipt,
@@ -46,9 +46,9 @@ pub trait Runtime {
         program_id: &UnitsObjectId,
         args: &[u8],
         transaction_hash: &TransactionHash,
-        objects: HashMap<UnitsObjectId, TokenizedObject>,
+        objects: HashMap<UnitsObjectId, UnitsObject>,
         parameters: HashMap<String, String>,
-    ) -> Result<HashMap<UnitsObjectId, TokenizedObject>, ExecutionError> {
+    ) -> Result<HashMap<UnitsObjectId, UnitsObject>, ExecutionError> {
         // Create an instruction with the program args as parameters
         let instruction = Instruction::new(
             args.to_vec(),
