@@ -1,3 +1,4 @@
+pub mod host_environment;
 pub mod mock_runtime;
 pub mod runtime;
 pub mod runtime_backend;
@@ -19,6 +20,11 @@ pub use verification::{detect_double_spend, verify_transaction_included, ProofVe
 pub use runtime_backend::{
     EbpfRuntimeBackend, ExecutionError, InstructionContext, InstructionResult, RuntimeBackend,
     RuntimeBackendManager, WasmRuntimeBackend,
+};
+
+// Re-export host environment types
+pub use host_environment::{
+    create_standard_host_environment, HostEnvironment, StandardHostEnvironment,
 };
 
 // Re-export Wasmtime backend with feature flag

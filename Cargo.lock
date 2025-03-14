@@ -2620,6 +2620,7 @@ dependencies = [
  "curve25519-dalek",
  "log",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
  "units-core",
