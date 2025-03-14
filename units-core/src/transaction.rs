@@ -1,6 +1,6 @@
 use crate::id::UnitsObjectId;
 use crate::locks::{AccessIntent, ObjectLockGuard, PersistentLockManager};
-use crate::objects::TokenizedObject;
+use crate::objects::{TokenizedObject, CodeObject, UnitsObject};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -384,7 +384,10 @@ impl Transaction {
     }
 }
 
-/// Represents the before and after state of an object in a transaction
+/// Represents the before and after state of a legacy TokenizedObject in a transaction
+/// 
+/// This is maintained for backward compatibility.
+/// New code should use UnifiedObjectEffect instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransactionEffect {
     /// The transaction that caused this effect
@@ -401,13 +404,13 @@ pub struct TransactionEffect {
 }
 
 /// Represents the before and after state of a units object in a transaction
-/// This is a generic version that supports both TokenizedObject and CodeObject
+/// This supports both TokenizedObject and CodeObject for backward compatibility
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ObjectEffect {
-    /// Effect on a TokenizedObject
+    /// Effect on a TokenizedObject (legacy)
     Token(TransactionEffect),
     
-    /// Effect on a CodeObject
+    /// Effect on a CodeObject (legacy)
     Code {
         /// The transaction that caused this effect
         transaction_hash: TransactionHash,
@@ -416,11 +419,240 @@ pub enum ObjectEffect {
         object_id: UnitsObjectId,
         
         /// The state of the object before the transaction (None if object was created)
-        before_image: Option<crate::objects::CodeObject>,
+        before_image: Option<CodeObject>,
         
         /// The state of the object after the transaction (None if object was deleted)
-        after_image: Option<crate::objects::CodeObject>,
+        after_image: Option<CodeObject>,
     },
+    
+    /// Effect on a unified UnitsObject (new model)
+    Unified(UnifiedObjectEffect),
+}
+
+impl ObjectEffect {
+    /// Get the transaction hash for this effect
+    pub fn transaction_hash(&self) -> &TransactionHash {
+        match self {
+            ObjectEffect::Token(effect) => &effect.transaction_hash,
+            ObjectEffect::Code { transaction_hash, .. } => transaction_hash,
+            ObjectEffect::Unified(effect) => &effect.transaction_hash,
+        }
+    }
+    
+    /// Get the object ID for this effect
+    pub fn object_id(&self) -> &UnitsObjectId {
+        match self {
+            ObjectEffect::Token(effect) => &effect.object_id,
+            ObjectEffect::Code { object_id, .. } => object_id,
+            ObjectEffect::Unified(effect) => &effect.object_id,
+        }
+    }
+    
+    /// Convert this effect to a UnifiedObjectEffect
+    pub fn to_unified(&self) -> UnifiedObjectEffect {
+        match self {
+            ObjectEffect::Token(effect) => {
+                let before_image = effect.before_image.as_ref().map(|obj| obj.to_units_object());
+                let after_image = effect.after_image.as_ref().map(|obj| obj.to_units_object());
+                
+                UnifiedObjectEffect {
+                    transaction_hash: effect.transaction_hash,
+                    object_id: effect.object_id,
+                    before_image,
+                    after_image,
+                }
+            },
+            ObjectEffect::Code { transaction_hash, object_id, before_image, after_image } => {
+                let before = before_image.as_ref().map(|obj| obj.to_units_object());
+                let after = after_image.as_ref().map(|obj| obj.to_units_object());
+                
+                UnifiedObjectEffect {
+                    transaction_hash: *transaction_hash,
+                    object_id: *object_id,
+                    before_image: before,
+                    after_image: after,
+                }
+            },
+            ObjectEffect::Unified(effect) => effect.clone(),
+        }
+    }
+    
+    /// Check if this effect represents an object creation
+    pub fn is_creation(&self) -> bool {
+        match self {
+            ObjectEffect::Token(effect) => effect.before_image.is_none() && effect.after_image.is_some(),
+            ObjectEffect::Code { before_image, after_image, .. } => before_image.is_none() && after_image.is_some(),
+            ObjectEffect::Unified(effect) => effect.before_image.is_none() && effect.after_image.is_some(),
+        }
+    }
+    
+    /// Check if this effect represents an object deletion
+    pub fn is_deletion(&self) -> bool {
+        match self {
+            ObjectEffect::Token(effect) => effect.before_image.is_some() && effect.after_image.is_none(),
+            ObjectEffect::Code { before_image, after_image, .. } => before_image.is_some() && after_image.is_none(),
+            ObjectEffect::Unified(effect) => effect.before_image.is_some() && effect.after_image.is_none(),
+        }
+    }
+    
+    /// Check if this effect represents an object modification
+    pub fn is_modification(&self) -> bool {
+        match self {
+            ObjectEffect::Token(effect) => effect.before_image.is_some() && effect.after_image.is_some(),
+            ObjectEffect::Code { before_image, after_image, .. } => before_image.is_some() && after_image.is_some(),
+            ObjectEffect::Unified(effect) => effect.before_image.is_some() && effect.after_image.is_some(),
+        }
+    }
+}
+
+/// Represents the before and after state of a unified UnitsObject in a transaction
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UnifiedObjectEffect {
+    /// The transaction that caused this effect
+    pub transaction_hash: TransactionHash,
+    
+    /// The ID of the object affected
+    pub object_id: UnitsObjectId,
+    
+    /// The state of the object before the transaction (None if object was created)
+    pub before_image: Option<UnitsObject>,
+    
+    /// The state of the object after the transaction (None if object was deleted)
+    pub after_image: Option<UnitsObject>,
+}
+
+impl UnifiedObjectEffect {
+    /// Create a new effect for object creation
+    pub fn new_creation(
+        transaction_hash: TransactionHash,
+        object: UnitsObject,
+    ) -> Self {
+        Self {
+            transaction_hash,
+            object_id: *object.id(),
+            before_image: None,
+            after_image: Some(object),
+        }
+    }
+    
+    /// Create a new effect for object deletion
+    pub fn new_deletion(
+        transaction_hash: TransactionHash,
+        object: UnitsObject,
+    ) -> Self {
+        Self {
+            transaction_hash,
+            object_id: *object.id(),
+            before_image: Some(object),
+            after_image: None,
+        }
+    }
+    
+    /// Create a new effect for object modification
+    pub fn new_modification(
+        transaction_hash: TransactionHash,
+        before: UnitsObject,
+        after: UnitsObject,
+    ) -> Self {
+        Self {
+            transaction_hash,
+            object_id: *after.id(),
+            before_image: Some(before),
+            after_image: Some(after),
+        }
+    }
+    
+    /// Check if this effect represents an object creation
+    pub fn is_creation(&self) -> bool {
+        self.before_image.is_none() && self.after_image.is_some()
+    }
+    
+    /// Check if this effect represents an object deletion
+    pub fn is_deletion(&self) -> bool {
+        self.before_image.is_some() && self.after_image.is_none()
+    }
+    
+    /// Check if this effect represents an object modification
+    pub fn is_modification(&self) -> bool {
+        self.before_image.is_some() && self.after_image.is_some()
+    }
+    
+    /// Convert to legacy TransactionEffect if possible
+    pub fn to_legacy_token_effect(&self) -> Option<TransactionEffect> {
+        match (&self.before_image, &self.after_image) {
+            (Some(before), Some(after)) if before.is_token() && after.is_token() => {
+                // Both before and after are tokens - create a modification effect
+                let before_obj = self.before_image_as_token()?;
+                let after_obj = self.after_image_as_token()?;
+                
+                Some(TransactionEffect {
+                    transaction_hash: self.transaction_hash,
+                    object_id: self.object_id,
+                    before_image: Some(before_obj),
+                    after_image: Some(after_obj),
+                })
+            },
+            (None, Some(after)) if after.is_token() => {
+                // Token creation
+                let after_obj = self.after_image_as_token()?;
+                
+                Some(TransactionEffect {
+                    transaction_hash: self.transaction_hash,
+                    object_id: self.object_id,
+                    before_image: None,
+                    after_image: Some(after_obj),
+                })
+            },
+            (Some(before), None) if before.is_token() => {
+                // Token deletion
+                let before_obj = self.before_image_as_token()?;
+                
+                Some(TransactionEffect {
+                    transaction_hash: self.transaction_hash,
+                    object_id: self.object_id,
+                    before_image: Some(before_obj),
+                    after_image: None,
+                })
+            },
+            _ => None,
+        }
+    }
+    
+    /// Convert before image to TokenizedObject if possible
+    fn before_image_as_token(&self) -> Option<TokenizedObject> {
+        if let Some(before) = &self.before_image {
+            if before.is_token() {
+                if let (Some(token_type), Some(token_manager)) = (before.token_type(), before.token_manager()) {
+                    return Some(TokenizedObject::new(
+                        *before.id(),
+                        *before.owner(),
+                        token_type,
+                        *token_manager,
+                        before.data().to_vec(),
+                    ));
+                }
+            }
+        }
+        None
+    }
+    
+    /// Convert after image to TokenizedObject if possible
+    fn after_image_as_token(&self) -> Option<TokenizedObject> {
+        if let Some(after) = &self.after_image {
+            if after.is_token() {
+                if let (Some(token_type), Some(token_manager)) = (after.token_type(), after.token_manager()) {
+                    return Some(TokenizedObject::new(
+                        *after.id(),
+                        *after.owner(),
+                        token_type,
+                        *token_manager,
+                        after.data().to_vec(),
+                    ));
+                }
+            }
+        }
+        None
+    }
 }
 
 /// A receipt of a processed transaction, containing all proofs of object modifications
@@ -507,20 +739,20 @@ impl TransactionReceipt {
         self.object_proofs.insert(object_id, proof);
     }
 
-    /// Add a transaction effect to the receipt (legacy method)
+    /// Add a legacy transaction effect to the receipt
     pub fn add_effect(&mut self, effect: TransactionEffect) {
         // Add to both legacy effects and new object_effects for backward compatibility
         self.object_effects.push(ObjectEffect::Token(effect.clone()));
         self.effects.push(effect);
     }
 
-    /// Add a code object effect to the receipt
+    /// Add a legacy code object effect to the receipt
     pub fn add_code_effect(
         &mut self,
         transaction_hash: TransactionHash,
         object_id: UnitsObjectId,
-        before_image: Option<crate::objects::CodeObject>,
-        after_image: Option<crate::objects::CodeObject>,
+        before_image: Option<CodeObject>,
+        after_image: Option<CodeObject>,
     ) {
         self.object_effects.push(ObjectEffect::Code {
             transaction_hash,
@@ -528,6 +760,96 @@ impl TransactionReceipt {
             before_image,
             after_image,
         });
+    }
+
+    /// Add a unified object effect to the receipt
+    pub fn add_unified_effect(
+        &mut self,
+        transaction_hash: TransactionHash,
+        object_id: UnitsObjectId,
+        before_image: Option<UnitsObject>,
+        after_image: Option<UnitsObject>,
+    ) {
+        // Clone the before/after images for backward compatibility
+        let before_clone = before_image.clone();
+        let after_clone = after_image.clone();
+        
+        let unified_effect = UnifiedObjectEffect {
+            transaction_hash,
+            object_id,
+            before_image,
+            after_image,
+        };
+        
+        self.object_effects.push(ObjectEffect::Unified(unified_effect));
+        
+        // Add to legacy effects for backward compatibility if possible
+        if let Some(after) = &after_clone {
+            if after.is_token() {
+                // Try to convert to a legacy TokenizedObject if it's a token type
+                if let (Some(token_type), Some(token_manager)) = (after.token_type(), after.token_manager()) {
+                    let token_obj = TokenizedObject::new(
+                        *after.id(),
+                        *after.owner(),
+                        token_type,
+                        *token_manager,
+                        after.data().to_vec(),
+                    );
+                    
+                    // Create before image if it exists
+                    let before_token = before_clone.as_ref().and_then(|before| {
+                        if before.is_token() {
+                            if let (Some(token_type), Some(token_manager)) = (before.token_type(), before.token_manager()) {
+                                Some(TokenizedObject::new(
+                                    *before.id(),
+                                    *before.owner(),
+                                    token_type,
+                                    *token_manager,
+                                    before.data().to_vec(),
+                                ))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    });
+                    
+                    let legacy_effect = TransactionEffect {
+                        transaction_hash,
+                        object_id,
+                        before_image: before_token,
+                        after_image: Some(token_obj),
+                    };
+                    
+                    self.effects.push(legacy_effect);
+                }
+            }
+        } else if before_clone.is_some() {
+            // Object was deleted - add legacy effect if it was a token
+            if let Some(before) = &before_clone {
+                if before.is_token() {
+                    if let (Some(token_type), Some(token_manager)) = (before.token_type(), before.token_manager()) {
+                        let token_obj = TokenizedObject::new(
+                            *before.id(),
+                            *before.owner(),
+                            token_type,
+                            *token_manager,
+                            before.data().to_vec(),
+                        );
+                        
+                        let legacy_effect = TransactionEffect {
+                            transaction_hash,
+                            object_id,
+                            before_image: Some(token_obj),
+                            after_image: None,
+                        };
+                        
+                        self.effects.push(legacy_effect);
+                    }
+                }
+            }
+        }
     }
 
     /// Add a generic object effect to the receipt
@@ -570,5 +892,196 @@ impl TransactionReceipt {
     /// Get the total number of effects (both token and code objects)
     pub fn effect_count(&self) -> usize {
         self.object_effects.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::objects::{UnitsObject, TokenType};
+    use crate::id::UnitsObjectId;
+    
+    #[test]
+    fn test_unified_object_effect() {
+        // Create an ID for testing
+        let id = UnitsObjectId::new([1; 32]);
+        let owner = UnitsObjectId::new([2; 32]);
+        let token_manager = UnitsObjectId::new([3; 32]);
+        let data = vec![0, 1, 2, 3, 4];
+        let transaction_hash = [4; 32];
+        
+        // Create a token object
+        let token_obj = UnitsObject::new_token(
+            id,
+            owner,
+            TokenType::Native,
+            token_manager,
+            data.clone(),
+        );
+        
+        // Create a token creation effect
+        let creation_effect = UnifiedObjectEffect::new_creation(
+            transaction_hash,
+            token_obj.clone(),
+        );
+        
+        // Check the effect properties
+        assert!(creation_effect.is_creation());
+        assert!(!creation_effect.is_deletion());
+        assert!(!creation_effect.is_modification());
+        assert_eq!(creation_effect.object_id, id);
+        assert_eq!(creation_effect.transaction_hash, transaction_hash);
+        assert_eq!(creation_effect.before_image, None);
+        assert!(creation_effect.after_image.is_some());
+        
+        // Check conversion to legacy
+        let legacy_effect = creation_effect.to_legacy_token_effect();
+        assert!(legacy_effect.is_some());
+        let legacy = legacy_effect.unwrap();
+        assert_eq!(legacy.transaction_hash, transaction_hash);
+        assert_eq!(legacy.object_id, id);
+        assert_eq!(legacy.before_image, None);
+        assert!(legacy.after_image.is_some());
+        
+        // Create a modified object
+        let mut modified_obj = token_obj.clone();
+        modified_obj.data = vec![5, 6, 7, 8, 9];
+        
+        // Create a modification effect
+        let modification_effect = UnifiedObjectEffect::new_modification(
+            transaction_hash,
+            token_obj.clone(),
+            modified_obj.clone(),
+        );
+        
+        // Check the effect properties
+        assert!(!modification_effect.is_creation());
+        assert!(!modification_effect.is_deletion());
+        assert!(modification_effect.is_modification());
+        
+        // Create a deletion effect
+        let deletion_effect = UnifiedObjectEffect::new_deletion(
+            transaction_hash,
+            token_obj.clone(),
+        );
+        
+        // Check the effect properties
+        assert!(!deletion_effect.is_creation());
+        assert!(deletion_effect.is_deletion());
+        assert!(!deletion_effect.is_modification());
+    }
+    
+    #[test]
+    fn test_object_effect_conversion() {
+        // Create an ID for testing
+        let id = UnitsObjectId::new([1; 32]);
+        let owner = UnitsObjectId::new([2; 32]);
+        let token_manager = UnitsObjectId::new([3; 32]);
+        let data = vec![0, 1, 2, 3, 4];
+        let transaction_hash = [4; 32];
+        
+        // Create objects
+        let token_obj = UnitsObject::new_token(
+            id,
+            owner,
+            TokenType::Native,
+            token_manager,
+            data.clone(),
+        );
+        
+        let code_obj = UnitsObject::new_code(
+            id,
+            owner,
+            data.clone(),
+            crate::transaction::RuntimeType::Wasm,
+            "main".to_string(),
+        );
+        
+        // Create different effect types
+        let token_effect = UnifiedObjectEffect::new_creation(
+            transaction_hash,
+            token_obj.clone(),
+        );
+        
+        let code_effect = UnifiedObjectEffect::new_creation(
+            transaction_hash,
+            code_obj.clone(),
+        );
+        
+        // Create ObjectEffect enum variants
+        let obj_effect_token = ObjectEffect::Unified(token_effect);
+        let obj_effect_code = ObjectEffect::Unified(code_effect);
+        
+        // Convert to unified and check properties
+        let unified_token = obj_effect_token.to_unified();
+        let unified_code = obj_effect_code.to_unified();
+        
+        assert!(unified_token.after_image.as_ref().unwrap().is_token());
+        assert!(unified_code.after_image.as_ref().unwrap().is_code());
+        
+        // Check effect state helpers
+        assert!(obj_effect_token.is_creation());
+        assert!(!obj_effect_token.is_deletion());
+        assert!(!obj_effect_token.is_modification());
+    }
+    
+    #[test]
+    fn test_transaction_receipt_unified_effects() {
+        // Create an ID for testing
+        let id = UnitsObjectId::new([1; 32]);
+        let owner = UnitsObjectId::new([2; 32]);
+        let token_manager = UnitsObjectId::new([3; 32]);
+        let data = vec![0, 1, 2, 3, 4];
+        let transaction_hash = [4; 32];
+        
+        // Create a token object
+        let token_obj = UnitsObject::new_token(
+            id,
+            owner,
+            TokenType::Native,
+            token_manager,
+            data.clone(),
+        );
+        
+        // Create a transaction receipt
+        let mut receipt = TransactionReceipt::new(
+            transaction_hash,
+            1234, // slot
+            true, // success
+            56789, // timestamp
+        );
+        
+        // Add a unified effect
+        receipt.add_unified_effect(
+            transaction_hash,
+            id,
+            None,
+            Some(token_obj.clone()),
+        );
+        
+        // Check that the receipt contains both the unified effect and legacy effect
+        assert_eq!(receipt.effect_count(), 1);
+        assert_eq!(receipt.effects.len(), 1);
+        
+        // Create a code object
+        let code_obj = UnitsObject::new_code(
+            id,
+            owner,
+            data.clone(),
+            crate::transaction::RuntimeType::Wasm,
+            "main".to_string(),
+        );
+        
+        // Add a code effect
+        receipt.add_unified_effect(
+            transaction_hash,
+            id,
+            Some(token_obj.clone()),
+            Some(code_obj.clone()),
+        );
+        
+        // Check that we have two effects in the effects list (token creation and token-to-code conversion)
+        assert_eq!(receipt.effect_count(), 2);
+        assert_eq!(receipt.effects.len(), 1); // Only 1 legacy effect since converting token to code doesn't create a legacy effect
     }
 }

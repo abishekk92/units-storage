@@ -13,7 +13,10 @@ pub use objects::{
     TokenizedObject, 
     CodeObject, 
     CodeObjectMetadata, 
-    UnitsObject
+    UnitsObject,
+    ObjectType,
+    ObjectMetadata,
+    LegacyUnitsObject
 };
 
 // Re-export lock types
@@ -35,6 +38,7 @@ pub use transaction::{
     TransactionHash,
     TransactionReceipt,
     ObjectEffect,
+    UnifiedObjectEffect,
 };
 
 // Re-export scheduler types
