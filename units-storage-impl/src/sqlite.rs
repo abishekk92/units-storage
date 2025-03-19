@@ -7,6 +7,7 @@ use crate::storage_traits::{
     UnitsStorage, UnitsStorageIterator, UnitsStorageProofEngine, UnitsWriteAheadLog, WALEntry,
 };
 use anyhow::{Context, Result};
+use crate::storage_traits::{AsyncSource, AsyncSourceAdapter, UnitsIterator};
 use log;
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions},
@@ -40,6 +41,87 @@ pub struct SqliteStorageIterator {
     pool: SqlitePool,
     rt: Arc<Runtime>,
     current_index: i64,
+}
+
+/// Async source for SqliteStorageIterator
+#[cfg(feature = "sqlite")]
+pub struct SqliteObjectSource {
+    pool: SqlitePool,
+    current_index: i64,
+}
+
+#[cfg(feature = "sqlite")]
+impl SqliteObjectSource {
+    pub fn new(pool: SqlitePool) -> Self {
+        Self {
+            pool,
+            current_index: 0,
+        }
+    }
+}
+
+#[cfg(feature = "sqlite")]
+impl AsyncSource<UnitsObject, StorageError> for SqliteObjectSource {
+    fn fetch_next(&mut self) -> futures::future::BoxFuture<'_, Option<Result<UnitsObject, StorageError>>> {
+        let pool = self.pool.clone();
+        let index = self.current_index;
+        
+        Box::pin(async move {
+            // Query a single object at the current index
+            let query = "SELECT id, holder, token_type, token_manager, data FROM objects LIMIT 1 OFFSET ?";
+
+            let row = match sqlx::query(query)
+                .bind(index)
+                .fetch_optional(&pool)
+                .await
+            {
+                Ok(Some(row)) => row,
+                Ok(None) => return None,
+                Err(e) => return Some(Err(StorageError::Database(e.to_string()))),
+            };
+
+            let id_blob: Vec<u8> = row.get(0);
+            let holder_blob: Vec<u8> = row.get(1);
+            let token_type_int: i64 = row.get(2);
+            let token_manager_blob: Vec<u8> = row.get(3);
+            let data: Option<Vec<u8>> = row.get(4);
+            let data = data.unwrap_or_default();
+
+            // Convert to UnitsObjectId
+            let mut id_array = [0u8; 32];
+            let mut holder_array = [0u8; 32];
+            let mut token_manager_array = [0u8; 32];
+
+            if id_blob.len() == 32 {
+                id_array.copy_from_slice(&id_blob);
+            }
+
+            if holder_blob.len() == 32 {
+                holder_array.copy_from_slice(&holder_blob);
+            }
+
+            if token_manager_blob.len() == 32 {
+                token_manager_array.copy_from_slice(&token_manager_blob);
+            }
+
+            // Convert token type
+            let _object_type = match SqliteStorage::int_to_object_type(token_type_int) {
+                Ok(tt) => tt,
+                Err(e) => return Some(Err(StorageError::Other(e))),
+            };
+            
+            // Increment the index for next fetch
+            self.current_index += 1;
+
+            Some(Ok(UnitsObject::new_token(
+                UnitsObjectId::new(id_array),
+                UnitsObjectId::new(holder_array),
+                TokenType::Native, // Default to Native
+                UnitsObjectId::new(token_manager_array),
+                data,
+            )))
+        })
+    }
 }
 
 /// Iterator implementation for Transaction Receipts in SQLite storage
@@ -92,8 +174,8 @@ impl SqliteStorage {
             return Err(format!("Failed to initialize database schema: {}", e));
         }
 
-        // Initialize the lock manager
-        let lock_manager = SqliteLockManager::new(pool.clone());
+        // Initialize the lock manager with shared runtime
+        let lock_manager = SqliteLockManager::new(pool.clone(), rt.clone());
 
         Ok(Self {
             pool,
@@ -622,12 +704,24 @@ impl UnitsStorage for SqliteStorage {
     }
 
     fn scan(&self) -> Box<dyn UnitsStorageIterator + '_> {
-        // Return an iterator that will scan through all objects
-        Box::new(SqliteStorageIterator {
-            pool: self.pool.clone(),
-            rt: self.rt.clone(),
-            current_index: 0,
-        })
+        // Return an iterator that will scan through all objects using our generic async adapter
+        #[cfg(feature = "sqlite")]
+        {
+            // Create a new async source for objects
+            let source = SqliteObjectSource::new(self.pool.clone());
+            
+            // Create an adapter with the source and runtime
+            let adapter = AsyncSourceAdapter::new(source, self.rt.clone());
+            
+            // Convert to a generic iterator and return
+            Box::new(adapter.into_iterator())
+        }
+
+        #[cfg(not(feature = "sqlite"))]
+        {
+            // Return an empty iterator if sqlite is not enabled
+            Box::new(UnitsIterator::<UnitsObject, StorageError>::empty())
+        }
     }
 }
 
@@ -829,20 +923,8 @@ impl UnitsStorageProofEngine for SqliteStorage {
 
     fn get_proof_history(&self, _id: &UnitsObjectId) -> Box<dyn UnitsProofIterator + '_> {
         // Not implemented for SQLite yet
-        // Create a typed empty iterator that implements UnitsProofIterator
-        struct EmptyProofIterator;
-
-        impl Iterator for EmptyProofIterator {
-            type Item = Result<(SlotNumber, UnitsObjectProof), StorageError>;
-
-            fn next(&mut self) -> Option<Self::Item> {
-                None
-            }
-        }
-
-        impl UnitsProofIterator for EmptyProofIterator {}
-
-        Box::new(EmptyProofIterator)
+        // Use the generic empty iterator
+        Box::new(UnitsIterator::<(SlotNumber, UnitsObjectProof), StorageError>::empty())
     }
 
     fn get_proof_at_slot(
@@ -858,20 +940,8 @@ impl UnitsStorageProofEngine for SqliteStorage {
 
     fn get_state_proofs(&self) -> Box<dyn UnitsStateProofIterator + '_> {
         // Not implemented for SQLite yet
-        // Create a typed empty iterator that implements UnitsStateProofIterator
-        struct EmptyStateProofIterator;
-
-        impl Iterator for EmptyStateProofIterator {
-            type Item = Result<StateProof, StorageError>;
-
-            fn next(&mut self) -> Option<Self::Item> {
-                None
-            }
-        }
-
-        impl UnitsStateProofIterator for EmptyStateProofIterator {}
-
-        Box::new(EmptyStateProofIterator)
+        // Use the generic empty iterator
+        Box::new(UnitsIterator::<StateProof, StorageError>::empty())
     }
 
     fn get_state_proof_at_slot(

@@ -11,11 +11,385 @@ use std::iter::Iterator;
 use std::path::Path;
 
 //==============================================================================
+// UTILITY FUNCTIONS AND HELPERS
+//==============================================================================
+
+/// Utility functions and helper implementations for storage traits
+pub mod utils {
+    use super::*;
+    use std::collections::HashMap;
+
+    /// Default implementation for set_batch operation
+    pub fn set_batch<S: UnitsStorage + ?Sized>(
+        storage: &S,
+        objects: &[UnitsObject],
+        transaction_hash: [u8; 32],
+    ) -> Result<HashMap<UnitsObjectId, UnitsObjectProof>, StorageError> {
+        let mut proofs = HashMap::new();
+        for object in objects {
+            let proof = storage.set(object, Some(transaction_hash))?;
+            proofs.insert(*object.id(), proof);
+        }
+        Ok(proofs)
+    }
+
+    /// Default implementation for delete_batch operation
+    pub fn delete_batch<S: UnitsStorage + ?Sized>(
+        storage: &S,
+        ids: &[UnitsObjectId],
+        transaction_hash: [u8; 32],
+    ) -> Result<HashMap<UnitsObjectId, UnitsObjectProof>, StorageError> {
+        let mut proofs = HashMap::new();
+        for id in ids {
+            let proof = storage.delete(id, Some(transaction_hash))?;
+            proofs.insert(*id, proof);
+        }
+        Ok(proofs)
+    }
+
+    /// Default implementation for get_history operation
+    pub fn get_history<S: UnitsStorage + ?Sized>(
+        storage: &S,
+        id: &UnitsObjectId,
+        start_slot: SlotNumber,
+        end_slot: SlotNumber,
+    ) -> Result<HashMap<SlotNumber, UnitsObject>, StorageError> {
+        let mut history = HashMap::new();
+        let proofs: Vec<_> = storage
+            .get_proof_history(id)
+            .map(|r| r.unwrap())
+            .filter(|(slot, _)| *slot >= start_slot && *slot <= end_slot)
+            .collect();
+
+        if proofs.is_empty() {
+            return Ok(history);
+        }
+
+        for (slot, _) in proofs {
+            if let Some(obj) = storage.get_at_slot(id, slot)? {
+                history.insert(slot, obj);
+            }
+        }
+        Ok(history)
+    }
+
+    /// Default implementation for get_transaction_history operation
+    pub fn get_transaction_history<S: UnitsStorage + ?Sized>(
+        storage: &S,
+        id: &UnitsObjectId,
+        start_slot: Option<SlotNumber>,
+        end_slot: Option<SlotNumber>,
+    ) -> Result<Vec<[u8; 32]>, StorageError> {
+        let mut transactions = Vec::new();
+        let proofs: Vec<_> = storage
+            .get_proof_history(id)
+            .map(|r| r.unwrap())
+            .filter(|(slot, _)| {
+                if let Some(start) = start_slot {
+                    if *slot < start {
+                        return false;
+                    }
+                }
+                if let Some(end) = end_slot {
+                    if *slot > end {
+                        return false;
+                    }
+                }
+                true
+            })
+            .collect();
+
+        for (_, proof) in proofs {
+            if let Some(hash) = proof.transaction_hash {
+                if !transactions.contains(&hash) {
+                    transactions.push(hash);
+                }
+            }
+        }
+        Ok(transactions)
+    }
+
+    /// Default implementation for execute_transaction_batch operation
+    pub fn execute_transaction_batch<S: UnitsStorage + ?Sized>(
+        storage: &S,
+        objects_to_store: &[UnitsObject],
+        objects_to_delete: &[UnitsObjectId],
+        transaction_hash: [u8; 32],
+        slot: SlotNumber,
+    ) -> Result<TransactionReceipt, StorageError> {
+        // Get the current timestamp
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        // Create a receipt with Processing commitment level
+        let mut receipt = TransactionReceipt::with_commitment_level(
+            transaction_hash,
+            slot,
+            true, // Assume success initially
+            timestamp,
+            CommitmentLevel::Processing,
+        );
+
+        // For each object to store, retrieve its current state for the before image
+        for object in objects_to_store {
+            let before_image = storage.get(object.id())?;
+            let effect = TransactionEffect {
+                transaction_hash,
+                object_id: *object.id(),
+                before_image,
+                after_image: Some(object.clone()),
+            };
+            receipt.add_effect(effect);
+        }
+
+        // For each object to delete, retrieve its current state for the before image
+        for &object_id in objects_to_delete {
+            let before_image = storage.get(&object_id)?;
+            if let Some(before) = before_image {
+                let effect = TransactionEffect {
+                    transaction_hash,
+                    object_id,
+                    before_image: Some(before),
+                    after_image: None, // Object will be deleted
+                };
+                receipt.add_effect(effect);
+            }
+        }
+
+        // Apply changes
+        for object in objects_to_store {
+            storage.set(object, Some(transaction_hash))?;
+        }
+
+        for &id in objects_to_delete {
+            storage.delete(&id, Some(transaction_hash))?;
+        }
+
+        Ok(receipt)
+    }
+
+    /// Default implementation for commit_transaction operation
+    pub fn commit_transaction<S: UnitsStorage + ?Sized>(
+        storage: &S,
+        transaction_hash: &[u8; 32],
+    ) -> Result<(), StorageError> {
+        // Get the transaction receipt
+        let mut receipt = match storage.get_transaction_receipt(transaction_hash)? {
+            Some(r) => r,
+            None => return Err(StorageError::TransactionNotFound(*transaction_hash)),
+        };
+
+        // Skip if already committed
+        if receipt.commitment_level == CommitmentLevel::Committed {
+            return Ok(());
+        }
+
+        // Verify transaction is in Processing state
+        if receipt.commitment_level != CommitmentLevel::Processing {
+            return Err(StorageError::InvalidOperation(format!(
+                "Cannot commit transaction with commitment level {:?}. Only Processing transactions can be committed.",
+                receipt.commitment_level
+            )));
+        }
+
+        // Clone effects to avoid borrowing issues
+        let effects = receipt.effects.clone();
+
+        // Generate proofs for all effects
+        for effect in effects {
+            if let Some(after) = &effect.after_image {
+                // Object was created or modified
+                let proof = storage.set(after, Some(*transaction_hash))?;
+                let proof_bytes = bincode::serialize(&proof)
+                    .map_err(|e| StorageError::Serialization(e.to_string()))?;
+                receipt.add_proof(effect.object_id, proof_bytes);
+            } else if effect.before_image.is_some() {
+                // Object was deleted
+                let proof = storage.delete(&effect.object_id, Some(*transaction_hash))?;
+                let proof_bytes = bincode::serialize(&proof)
+                    .map_err(|e| StorageError::Serialization(e.to_string()))?;
+                receipt.add_proof(effect.object_id, proof_bytes);
+            }
+        }
+
+        // Mark as committed
+        receipt.commit();
+
+        // Update the receipt in storage
+        storage.update_transaction_commitment(transaction_hash, CommitmentLevel::Committed)?;
+
+        Ok(())
+    }
+
+    /// Default implementation for rollback_transaction operation
+    pub fn rollback_transaction<S: UnitsStorage + ?Sized>(
+        storage: &S,
+        transaction_hash: &[u8; 32],
+    ) -> Result<bool, StorageError> {
+        // Get the transaction receipt
+        let receipt = match storage.get_transaction_receipt(transaction_hash)? {
+            Some(r) => r,
+            None => return Err(StorageError::TransactionNotFound(*transaction_hash)),
+        };
+
+        // Check if the transaction can be rolled back
+        if !receipt.can_rollback() {
+            return Err(StorageError::InvalidOperation(format!(
+                "Cannot rollback transaction with commitment level {:?}. Only Processing transactions can be rolled back.",
+                receipt.commitment_level
+            )));
+        }
+
+        // Restore the before image for each effect
+        for effect in receipt.effects {
+            if let Some(before_image) = effect.before_image {
+                // Object existed before transaction, restore its state
+                storage.set(&before_image, None)?;
+            } else {
+                // Object was created in this transaction, delete it
+                storage.delete(&effect.object_id, None)?;
+            }
+        }
+
+        // Mark the transaction as failed
+        storage.update_transaction_commitment(transaction_hash, CommitmentLevel::Failed)?;
+
+        Ok(true)
+    }
+
+    /// Default implementation for get_history_stats operation
+    pub fn get_history_stats() -> Result<HashMap<String, u64>, StorageError> {
+        let mut stats = HashMap::new();
+        stats.insert("total_objects".to_string(), 0);
+        stats.insert("total_proofs".to_string(), 0);
+        stats.insert("total_state_proofs".to_string(), 0);
+        stats.insert("oldest_slot".to_string(), 0);
+        stats.insert("newest_slot".to_string(), 0);
+        Ok(stats)
+    }
+}
+
+//==============================================================================
 // ITERATORS
 //==============================================================================
 
+/// Iterator implementation for Units types
+pub struct UnitsIterator<T, E = StorageError> {
+    inner: Box<dyn Iterator<Item = Result<T, E>> + Send + 'static>,
+}
+
+/// Async source for iterator - implements the logic to fetch the next item asynchronously
+/// This is used to create generic iterators from async code
+pub trait AsyncSource<T, E> {
+    /// Fetch the next item asynchronously
+    fn fetch_next(&mut self) -> futures::future::BoxFuture<'_, Option<Result<T, E>>>;
+}
+
+/// Helper to create iterators from async code
+pub struct AsyncSourceAdapter<S> {
+    source: S,
+    rt: std::sync::Arc<tokio::runtime::Runtime>,
+}
+
+impl<S> AsyncSourceAdapter<S> {
+    /// Create a new adapter from an async source and a runtime
+    pub fn new(source: S, rt: std::sync::Arc<tokio::runtime::Runtime>) -> Self {
+        Self { source, rt }
+    }
+    
+    /// Convert to a Units iterator
+    pub fn into_iterator<T, E>(self) -> UnitsIterator<T, E> 
+    where
+        T: 'static + Send,
+        E: 'static + Send,
+        S: AsyncSource<T, E> + 'static + Send,
+    {
+        let iter = AsyncIteratorWrapper {
+            source: self.source, 
+            rt: self.rt,
+            _marker: std::marker::PhantomData,
+        };
+        UnitsIterator::from_iter(iter)
+    }
+}
+
+/// A wrapper that implements Iterator for an AsyncSource
+struct AsyncIteratorWrapper<S, T, E> 
+where
+    S: AsyncSource<T, E>,
+    T: 'static,
+    E: 'static,
+{
+    source: S,
+    rt: std::sync::Arc<tokio::runtime::Runtime>,
+    _marker: std::marker::PhantomData<(T, E)>,
+}
+
+impl<S, T, E> Iterator for AsyncIteratorWrapper<S, T, E> 
+where
+    S: AsyncSource<T, E>,
+    T: 'static,
+    E: 'static,
+{
+    type Item = Result<T, E>;
+    
+    fn next(&mut self) -> Option<Self::Item> {
+        self.rt.block_on(self.source.fetch_next())
+    }
+}
+
+impl<T: 'static + Send, E: 'static + Send> UnitsIterator<T, E> {
+    /// Create a new empty iterator
+    pub fn empty() -> Self {
+        let iter = std::iter::empty();
+        Self { inner: Box::new(iter) }
+    }
+    
+    /// Create a new iterator from a single result
+    pub fn once(item: Result<T, E>) -> Self {
+        let iter = std::iter::once(item);
+        Self { inner: Box::new(iter) }
+    }
+    
+    /// Create a new iterator from a vector of results
+    pub fn from_vec(items: Vec<Result<T, E>>) -> Self {
+        let iter = items.into_iter();
+        Self { inner: Box::new(iter) }
+    }
+    
+    /// Create a new iterator from a successful vector of items
+    pub fn from_items(items: Vec<T>) -> Self 
+    where
+        E: std::fmt::Debug + std::fmt::Display + Send,
+        T: Clone,
+    {
+        let iter = items.into_iter().map(Ok);
+        Self { inner: Box::new(iter) }
+    }
+    
+    /// Create from an existing iterator
+    pub fn from_iter<I>(iter: I) -> Self
+    where
+        I: Iterator<Item = Result<T, E>> + Send + 'static,
+    {
+        Self { inner: Box::new(iter) }
+    }
+}
+
+impl<T, E> Iterator for UnitsIterator<T, E> {
+    type Item = Result<T, E>;
+    
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next()
+    }
+}
+
 /// Iterator for traversing objects in storage
 pub trait UnitsStorageIterator: Iterator<Item = Result<UnitsObject, StorageError>> {}
+
+impl UnitsStorageIterator for UnitsIterator<UnitsObject, StorageError> {}
 
 /// Iterator for traversing object proofs in storage
 pub trait UnitsProofIterator:
@@ -23,11 +397,17 @@ pub trait UnitsProofIterator:
 {
 }
 
+impl UnitsProofIterator for UnitsIterator<(SlotNumber, UnitsObjectProof), StorageError> {}
+
 /// Iterator for traversing state proofs in storage
 pub trait UnitsStateProofIterator: Iterator<Item = Result<StateProof, StorageError>> {}
 
+impl UnitsStateProofIterator for UnitsIterator<StateProof, StorageError> {}
+
 /// Iterator for traversing transaction receipts in storage
 pub trait UnitsReceiptIterator: Iterator<Item = Result<TransactionReceipt, StorageError>> {}
+
+impl UnitsReceiptIterator for UnitsIterator<TransactionReceipt, StorageError> {}
 
 //==============================================================================
 // WRITE-AHEAD LOG
@@ -190,13 +570,7 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
         objects: &[UnitsObject],
         transaction_hash: [u8; 32],
     ) -> Result<HashMap<UnitsObjectId, UnitsObjectProof>, StorageError> {
-        // Default implementation that calls set() for each object
-        let mut proofs = HashMap::new();
-        for object in objects {
-            let proof = self.set(object, Some(transaction_hash))?;
-            proofs.insert(*object.id(), proof);
-        }
-        Ok(proofs)
+        utils::set_batch(self, objects, transaction_hash)
     }
 
     /// Delete multiple objects in a single transaction
@@ -205,13 +579,7 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
         ids: &[UnitsObjectId],
         transaction_hash: [u8; 32],
     ) -> Result<HashMap<UnitsObjectId, UnitsObjectProof>, StorageError> {
-        // Default implementation that calls delete() for each object
-        let mut proofs = HashMap::new();
-        for id in ids {
-            let proof = self.delete(id, Some(transaction_hash))?;
-            proofs.insert(*id, proof);
-        }
-        Ok(proofs)
+        utils::delete_batch(self, ids, transaction_hash)
     }
 
     //--------------------------------------------------------------------------
@@ -225,23 +593,7 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
         start_slot: SlotNumber,
         end_slot: SlotNumber,
     ) -> Result<HashMap<SlotNumber, UnitsObject>, StorageError> {
-        let mut history = HashMap::new();
-        let proofs: Vec<_> = self
-            .get_proof_history(id)
-            .map(|r| r.unwrap())
-            .filter(|(slot, _)| *slot >= start_slot && *slot <= end_slot)
-            .collect();
-
-        if proofs.is_empty() {
-            return Ok(history);
-        }
-
-        for (slot, _) in proofs {
-            if let Some(obj) = self.get_at_slot(id, slot)? {
-                history.insert(slot, obj);
-            }
-        }
-        Ok(history)
+        utils::get_history(self, id, start_slot, end_slot)
     }
 
     /// Get all transactions that affected an object
@@ -251,33 +603,7 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
         start_slot: Option<SlotNumber>,
         end_slot: Option<SlotNumber>,
     ) -> Result<Vec<[u8; 32]>, StorageError> {
-        let mut transactions = Vec::new();
-        let proofs: Vec<_> = self
-            .get_proof_history(id)
-            .map(|r| r.unwrap())
-            .filter(|(slot, _)| {
-                if let Some(start) = start_slot {
-                    if *slot < start {
-                        return false;
-                    }
-                }
-                if let Some(end) = end_slot {
-                    if *slot > end {
-                        return false;
-                    }
-                }
-                true
-            })
-            .collect();
-
-        for (_, proof) in proofs {
-            if let Some(hash) = proof.transaction_hash {
-                if !transactions.contains(&hash) {
-                    transactions.push(hash);
-                }
-            }
-        }
-        Ok(transactions)
+        utils::get_transaction_history(self, id, start_slot, end_slot)
     }
 
     /// Compact historical data up to a specific slot
@@ -292,14 +618,7 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
 
     /// Get storage statistics about history size
     fn get_history_stats(&self) -> Result<HashMap<String, u64>, StorageError> {
-        // Default implementation that returns empty stats
-        let mut stats = HashMap::new();
-        stats.insert("total_objects".to_string(), 0);
-        stats.insert("total_proofs".to_string(), 0);
-        stats.insert("total_state_proofs".to_string(), 0);
-        stats.insert("oldest_slot".to_string(), 0);
-        stats.insert("newest_slot".to_string(), 0);
-        Ok(stats)
+        utils::get_history_stats()
     }
 
     //--------------------------------------------------------------------------
@@ -314,57 +633,7 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
         transaction_hash: [u8; 32],
         slot: SlotNumber,
     ) -> Result<TransactionReceipt, StorageError> {
-        // Get the current timestamp
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
-        // Create a receipt with Processing commitment level
-        let mut receipt = TransactionReceipt::with_commitment_level(
-            transaction_hash,
-            slot,
-            true, // Assume success initially
-            timestamp,
-            CommitmentLevel::Processing,
-        );
-
-        // For each object to store, retrieve its current state for the before image
-        for object in objects_to_store {
-            let before_image = self.get(object.id())?;
-            let effect = TransactionEffect {
-                transaction_hash,
-                object_id: *object.id(),
-                before_image,
-                after_image: Some(object.clone()),
-            };
-            receipt.add_effect(effect);
-        }
-
-        // For each object to delete, retrieve its current state for the before image
-        for &object_id in objects_to_delete {
-            let before_image = self.get(&object_id)?;
-            if let Some(before) = before_image {
-                let effect = TransactionEffect {
-                    transaction_hash,
-                    object_id,
-                    before_image: Some(before),
-                    after_image: None, // Object will be deleted
-                };
-                receipt.add_effect(effect);
-            }
-        }
-
-        // Apply changes
-        for object in objects_to_store {
-            self.set(object, Some(transaction_hash))?;
-        }
-
-        for &id in objects_to_delete {
-            self.delete(&id, Some(transaction_hash))?;
-        }
-
-        Ok(receipt)
+        utils::execute_transaction_batch(self, objects_to_store, objects_to_delete, transaction_hash, slot)
     }
 
     /// Get a transaction receipt by its hash
@@ -389,85 +658,12 @@ pub trait UnitsStorage: UnitsStorageProofEngine + UnitsWriteAheadLog {
 
     /// Commit a transaction, making its changes permanent
     fn commit_transaction(&self, transaction_hash: &[u8; 32]) -> Result<(), StorageError> {
-        // Get the transaction receipt
-        let mut receipt = match self.get_transaction_receipt(transaction_hash)? {
-            Some(r) => r,
-            None => return Err(StorageError::TransactionNotFound(*transaction_hash)),
-        };
-
-        // Skip if already committed
-        if receipt.commitment_level == CommitmentLevel::Committed {
-            return Ok(());
-        }
-
-        // Verify transaction is in Processing state
-        if receipt.commitment_level != CommitmentLevel::Processing {
-            return Err(StorageError::InvalidOperation(format!(
-                "Cannot commit transaction with commitment level {:?}. Only Processing transactions can be committed.",
-                receipt.commitment_level
-            )));
-        }
-
-        // Clone effects to avoid borrowing issues
-        let effects = receipt.effects.clone();
-
-        // Generate proofs for all effects
-        for effect in effects {
-            if let Some(after) = &effect.after_image {
-                // Object was created or modified
-                let proof = self.set(after, Some(*transaction_hash))?;
-                let proof_bytes = bincode::serialize(&proof)
-                    .map_err(|e| StorageError::Serialization(e.to_string()))?;
-                receipt.add_proof(effect.object_id, proof_bytes);
-            } else if effect.before_image.is_some() {
-                // Object was deleted
-                let proof = self.delete(&effect.object_id, Some(*transaction_hash))?;
-                let proof_bytes = bincode::serialize(&proof)
-                    .map_err(|e| StorageError::Serialization(e.to_string()))?;
-                receipt.add_proof(effect.object_id, proof_bytes);
-            }
-        }
-
-        // Mark as committed
-        receipt.commit();
-
-        // Update the receipt in storage
-        self.update_transaction_commitment(transaction_hash, CommitmentLevel::Committed)?;
-
-        Ok(())
+        utils::commit_transaction(self, transaction_hash)
     }
 
     /// Rollback a transaction, reverting all changes
     fn rollback_transaction(&self, transaction_hash: &[u8; 32]) -> Result<bool, StorageError> {
-        // Get the transaction receipt
-        let receipt = match self.get_transaction_receipt(transaction_hash)? {
-            Some(r) => r,
-            None => return Err(StorageError::TransactionNotFound(*transaction_hash)),
-        };
-
-        // Check if the transaction can be rolled back
-        if !receipt.can_rollback() {
-            return Err(StorageError::InvalidOperation(format!(
-                "Cannot rollback transaction with commitment level {:?}. Only Processing transactions can be rolled back.",
-                receipt.commitment_level
-            )));
-        }
-
-        // Restore the before image for each effect
-        for effect in receipt.effects {
-            if let Some(before_image) = effect.before_image {
-                // Object existed before transaction, restore its state
-                self.set(&before_image, None)?;
-            } else {
-                // Object was created in this transaction, delete it
-                self.delete(&effect.object_id, None)?;
-            }
-        }
-
-        // Mark the transaction as failed
-        self.update_transaction_commitment(transaction_hash, CommitmentLevel::Failed)?;
-
-        Ok(true)
+        utils::rollback_transaction(self, transaction_hash)
     }
 
     /// Mark a transaction as failed

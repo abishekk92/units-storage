@@ -9,58 +9,104 @@ use sqlx::Row;
 /// Direct implementation of the PersistentLockManager trait from units-core
 /// The LockManagerTrait is no longer needed as we can directly implement PersistentLockManager
 
-/// An empty iterator implementation for LockInfo
-pub struct EmptyLockIterator<E>(std::marker::PhantomData<E>);
+/// SQL query constants to avoid repetition
+#[cfg(feature = "sqlite")]
+mod sql {
+    pub const CREATE_LOCKS_TABLE: &str = r#"
+        CREATE TABLE IF NOT EXISTS units_locks (
+            object_id BLOB NOT NULL,
+            lock_type TEXT NOT NULL,
+            transaction_hash BLOB NOT NULL,
+            acquired_at INTEGER NOT NULL,
+            timeout_ms INTEGER,
+            PRIMARY KEY (object_id, transaction_hash)
+        );
+    "#;
+    
+    pub const GET_LOCK_BY_OBJECT_ID: &str = r#"
+        SELECT lock_type, transaction_hash, acquired_at, timeout_ms
+        FROM units_locks
+        WHERE object_id = ?
+        LIMIT 1
+    "#;
+    
+    pub const GET_ALL_LOCKS_BY_OBJECT_ID: &str = r#"
+        SELECT lock_type, transaction_hash, acquired_at, timeout_ms
+        FROM units_locks
+        WHERE object_id = ?
+    "#;
+    
+    pub const GET_LOCKS_BY_TRANSACTION: &str = r#"
+        SELECT object_id, lock_type, acquired_at, timeout_ms
+        FROM units_locks
+        WHERE transaction_hash = ?
+    "#;
+    
+    pub const DELETE_LOCK: &str = r#"
+        DELETE FROM units_locks
+        WHERE object_id = ? AND transaction_hash = ?
+    "#;
+    
+    pub const UPDATE_LOCK_TYPE: &str = r#"
+        UPDATE units_locks
+        SET lock_type = 'write'
+        WHERE object_id = ? AND transaction_hash = ?
+    "#;
+    
+    pub const INSERT_LOCK: &str = r#"
+        INSERT INTO units_locks (object_id, lock_type, transaction_hash, acquired_at, timeout_ms)
+        VALUES (?, ?, ?, ?, ?)
+    "#;
+    
+    pub const DELETE_EXPIRED_LOCKS: &str = r#"
+        DELETE FROM units_locks
+        WHERE timeout_ms IS NOT NULL AND acquired_at + timeout_ms / 1000 <= ?
+    "#;
+}
 
-impl<E> EmptyLockIterator<E> {
-    pub fn new() -> Self {
-        Self(std::marker::PhantomData)
+/// A unified iterator that can handle different types of lock info sources
+pub struct LockInfoIterator<E> {
+    inner: Box<dyn Iterator<Item = Result<LockInfo, E>> + Send + 'static>,
+}
+
+impl<E: 'static + Send> LockInfoIterator<E> {
+    /// Create a new empty iterator
+    pub fn empty() -> Self {
+        let iter = std::iter::empty();
+        Self { inner: Box::new(iter) }
+    }
+    
+    /// Create a new iterator from a single result
+    pub fn once(item: Result<LockInfo, E>) -> Self {
+        let iter = std::iter::once(item);
+        Self { inner: Box::new(iter) }
+    }
+    
+    /// Create a new iterator from a vector of results
+    pub fn from_vec(items: Vec<Result<LockInfo, E>>) -> Self {
+        let iter = items.into_iter();
+        Self { inner: Box::new(iter) }
+    }
+    
+    /// Create a new iterator from a successful vector of LockInfo
+    pub fn from_lock_infos(items: Vec<LockInfo>) -> Self 
+    where
+        E: Debug + std::fmt::Display + Send,
+    {
+        let iter = items.into_iter().map(Ok);
+        Self { inner: Box::new(iter) }
     }
 }
 
-impl<E> Iterator for EmptyLockIterator<E> {
+impl<E> Iterator for LockInfoIterator<E> {
     type Item = Result<LockInfo, E>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        None
-    }
-}
-
-impl<E: Debug + std::fmt::Display> UnitsLockIterator<E> for EmptyLockIterator<E> {}
-
-// Wrapper types for different iterator implementations
-
-/// Wrapper for a vector iterator
-pub struct LockInfoVecIterator(std::vec::IntoIter<Result<LockInfo, StorageError>>);
-
-impl Iterator for LockInfoVecIterator {
-    type Item = Result<LockInfo, StorageError>;
     
     fn next(&mut self) -> Option<Self::Item> {
-        self.0.next()
+        self.inner.next()
     }
 }
 
-impl UnitsLockIterator<StorageError> for LockInfoVecIterator {}
-
-/// Wrapper for a once (single item) iterator
-pub struct LockInfoOnceIterator(std::iter::Once<Result<LockInfo, StorageError>>);
-
-impl LockInfoOnceIterator {
-    pub fn new(item: Result<LockInfo, StorageError>) -> Self {
-        Self(std::iter::once(item))
-    }
-}
-
-impl Iterator for LockInfoOnceIterator {
-    type Item = Result<LockInfo, StorageError>;
-    
-    fn next(&mut self) -> Option<Self::Item> {
-        self.0.next()
-    }
-}
-
-impl UnitsLockIterator<StorageError> for LockInfoOnceIterator {}
+impl<E: Debug + std::fmt::Display + Send> UnitsLockIterator<E> for LockInfoIterator<E> {}
 
 /// Helper function to get the current timestamp in seconds
 pub fn current_time_secs() -> u64 {
@@ -75,31 +121,30 @@ pub fn current_time_secs() -> u64 {
 pub struct SqliteLockManager {
     /// The SQLite pool for database connections
     pool: sqlx::SqlitePool,
+    /// Shared runtime for async operations
+    rt: std::sync::Arc<tokio::runtime::Runtime>,
 }
 
 #[cfg(feature = "sqlite")]
 impl SqliteLockManager {
-    /// Create a new SqliteLockManager with the given SQLite connection pool
-    pub fn new(pool: sqlx::SqlitePool) -> Self {
-        Self { pool }
+    /// Create a new SqliteLockManager with the given SQLite connection pool and runtime
+    pub fn new(pool: sqlx::SqlitePool, rt: std::sync::Arc<tokio::runtime::Runtime>) -> Self {
+        Self { pool, rt }
     }
 
     /// Initialize the database schema for locks
     pub async fn initialize(&self) -> Result<(), StorageError> {
         // Create the locks table if it doesn't exist
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS units_locks (
-                object_id BLOB NOT NULL,
-                lock_type TEXT NOT NULL,
-                transaction_hash BLOB NOT NULL,
-                acquired_at INTEGER NOT NULL,
-                timeout_ms INTEGER,
-                PRIMARY KEY (object_id, transaction_hash)
-            );
+        sqlx::query(sql::CREATE_LOCKS_TABLE)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| {
+                StorageError::Database(format!("Failed to create locks table: {}", e))
+            })?;
             
-            CREATE INDEX IF NOT EXISTS idx_locks_transaction_hash ON units_locks(transaction_hash);
-            "#,
+        // Create index on transaction_hash
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_locks_transaction_hash ON units_locks(transaction_hash);"
         )
         .execute(&self.pool)
         .await
@@ -108,19 +153,44 @@ impl SqliteLockManager {
         Ok(())
     }
 
+    /// Convert a sqlx Row to a LockInfo
+    fn row_to_lock_info(&self, row: sqlx::sqlite::SqliteRow, object_id: &UnitsObjectId) -> Result<LockInfo, StorageError> {
+        let lock_type_str: String = row.get("lock_type");
+        let lock_type = match lock_type_str.as_str() {
+            "read" => LockType::Read,
+            "write" => LockType::Write,
+            _ => {
+                return Err(StorageError::Database(format!(
+                    "Unknown lock type: {}",
+                    lock_type_str
+                )))
+            }
+        };
+
+        let transaction_hash: Vec<u8> = row.get("transaction_hash");
+        let mut tx_hash = [0u8; 32];
+        if transaction_hash.len() >= 32 {
+            tx_hash.copy_from_slice(&transaction_hash[0..32]);
+        }
+
+        let acquired_at: i64 = row.get("acquired_at");
+        let timeout_ms: Option<i64> = row.get("timeout_ms");
+
+        Ok(LockInfo {
+            object_id: *object_id,
+            lock_type,
+            transaction_hash: tx_hash,
+            acquired_at: acquired_at as u64,
+            timeout_ms: timeout_ms.map(|t| t as u64),
+        })
+    }
+
     /// Helper to get the lock info for an object
     async fn get_object_lock_info_internal(
         &self,
         object_id: &UnitsObjectId,
     ) -> Result<Option<LockInfo>, StorageError> {
-        let result = sqlx::query(
-            r#"
-            SELECT lock_type, transaction_hash, acquired_at, timeout_ms
-            FROM units_locks
-            WHERE object_id = ?
-            LIMIT 1
-            "#,
-        )
+        let result = sqlx::query(sql::GET_LOCK_BY_OBJECT_ID)
         .bind(object_id.as_ref())
         .fetch_optional(&self.pool)
         .await
@@ -129,34 +199,7 @@ impl SqliteLockManager {
         })?;
 
         if let Some(row) = result {
-            let lock_type_str: String = row.get("lock_type");
-            let lock_type = match lock_type_str.as_str() {
-                "read" => LockType::Read,
-                "write" => LockType::Write,
-                _ => {
-                    return Err(StorageError::Database(format!(
-                        "Unknown lock type: {}",
-                        lock_type_str
-                    )))
-                }
-            };
-
-            let transaction_hash: Vec<u8> = row.get("transaction_hash");
-            let mut tx_hash = [0u8; 32];
-            if transaction_hash.len() >= 32 {
-                tx_hash.copy_from_slice(&transaction_hash[0..32]);
-            }
-
-            let acquired_at: i64 = row.get("acquired_at");
-            let timeout_ms: Option<i64> = row.get("timeout_ms");
-
-            Ok(Some(LockInfo {
-                object_id: *object_id,
-                lock_type,
-                transaction_hash: tx_hash,
-                acquired_at: acquired_at as u64,
-                timeout_ms: timeout_ms.map(|t| t as u64),
-            }))
+            Ok(Some(self.row_to_lock_info(row, object_id)?))
         } else {
             Ok(None)
         }
@@ -167,13 +210,7 @@ impl SqliteLockManager {
         &self,
         object_id: &UnitsObjectId,
     ) -> Result<Vec<LockInfo>, StorageError> {
-        let results = sqlx::query(
-            r#"
-            SELECT lock_type, transaction_hash, acquired_at, timeout_ms
-            FROM units_locks
-            WHERE object_id = ?
-            "#,
-        )
+        let results = sqlx::query(sql::GET_ALL_LOCKS_BY_OBJECT_ID)
         .bind(object_id.as_ref())
         .fetch_all(&self.pool)
         .await
@@ -183,34 +220,7 @@ impl SqliteLockManager {
 
         let mut lock_infos = Vec::with_capacity(results.len());
         for row in results {
-            let lock_type_str: String = row.get("lock_type");
-            let lock_type = match lock_type_str.as_str() {
-                "read" => LockType::Read,
-                "write" => LockType::Write,
-                _ => {
-                    return Err(StorageError::Database(format!(
-                        "Unknown lock type: {}",
-                        lock_type_str
-                    )))
-                }
-            };
-
-            let transaction_hash: Vec<u8> = row.get("transaction_hash");
-            let mut tx_hash = [0u8; 32];
-            if transaction_hash.len() >= 32 {
-                tx_hash.copy_from_slice(&transaction_hash[0..32]);
-            }
-
-            let acquired_at: i64 = row.get("acquired_at");
-            let timeout_ms: Option<i64> = row.get("timeout_ms");
-
-            lock_infos.push(LockInfo {
-                object_id: *object_id,
-                lock_type,
-                transaction_hash: tx_hash,
-                acquired_at: acquired_at as u64,
-                timeout_ms: timeout_ms.map(|t| t as u64),
-            });
+            lock_infos.push(self.row_to_lock_info(row, object_id)?);
         }
 
         Ok(lock_infos)
@@ -310,12 +320,8 @@ impl PersistentLockManager for SqliteLockManager {
         transaction_hash: &[u8; 32],
         timeout_ms: Option<u64>,
     ) -> Result<bool, Self::Error> {
-        // Create a runtime for async operations
-        let rt = tokio::runtime::Runtime::new().map_err(|e| {
-            StorageError::Other(format!("Failed to create runtime: {}", e))
-        })?;
-
-        rt.block_on(async {
+        // Use the shared runtime
+        self.rt.block_on(async {
             // Check if this transaction already has a lock
             let existing_lock = self.check_transaction_has_lock(object_id, transaction_hash).await?;
             if let Some(lock) = existing_lock {
@@ -340,13 +346,7 @@ impl PersistentLockManager for SqliteLockManager {
                     
                     // Only this transaction has a lock, so upgrade is possible
                     // Delete the read lock and create a write lock
-                    sqlx::query(
-                        r#"
-                        UPDATE units_locks
-                        SET lock_type = 'write'
-                        WHERE object_id = ? AND transaction_hash = ?
-                        "#,
-                    )
+                    sqlx::query(sql::UPDATE_LOCK_TYPE)
                     .bind(object_id.as_ref())
                     .bind(transaction_hash.as_ref())
                     .execute(&self.pool)
@@ -373,13 +373,7 @@ impl PersistentLockManager for SqliteLockManager {
             };
 
             // Insert the new lock record
-            sqlx::query(
-                r#"
-                INSERT INTO units_locks
-                (object_id, lock_type, transaction_hash, acquired_at, timeout_ms)
-                VALUES (?, ?, ?, ?, ?)
-                "#,
-            )
+            sqlx::query(sql::INSERT_LOCK)
             .bind(object_id.as_ref())
             .bind(lock_type_str)
             .bind(transaction_hash.as_ref())
@@ -400,18 +394,9 @@ impl PersistentLockManager for SqliteLockManager {
         object_id: &UnitsObjectId,
         transaction_hash: &[u8; 32],
     ) -> Result<bool, Self::Error> {
-        let rt = tokio::runtime::Runtime::new().map_err(|e| {
-            StorageError::Other(format!("Failed to create runtime: {}", e))
-        })?;
-
-        rt.block_on(async {
+        self.rt.block_on(async {
             // Delete the lock record
-            let result = sqlx::query(
-                r#"
-                DELETE FROM units_locks
-                WHERE object_id = ? AND transaction_hash = ?
-                "#,
-            )
+            let result = sqlx::query(sql::DELETE_LOCK)
             .bind(object_id.as_ref())
             .bind(transaction_hash.as_ref())
             .execute(&self.pool)
@@ -428,11 +413,7 @@ impl PersistentLockManager for SqliteLockManager {
         &self,
         object_id: &UnitsObjectId,
     ) -> Result<Option<LockInfo>, Self::Error> {
-        let rt = tokio::runtime::Runtime::new().map_err(|e| {
-            StorageError::Other(format!("Failed to create runtime: {}", e))
-        })?;
-
-        rt.block_on(async { self.get_object_lock_info_internal(object_id).await })
+        self.rt.block_on(async { self.get_object_lock_info_internal(object_id).await })
     }
 
     fn can_acquire_lock(
@@ -441,11 +422,7 @@ impl PersistentLockManager for SqliteLockManager {
         intent: AccessIntent,
         transaction_hash: &[u8; 32],
     ) -> Result<bool, Self::Error> {
-        let rt = tokio::runtime::Runtime::new().map_err(|e| {
-            StorageError::Other(format!("Failed to create runtime: {}", e))
-        })?;
-
-        rt.block_on(async {
+        self.rt.block_on(async {
             // Convert AccessIntent to LockType
             let lock_type = match intent {
                 AccessIntent::Read => LockType::Read,
@@ -501,23 +478,9 @@ impl PersistentLockManager for SqliteLockManager {
         &self,
         transaction_hash: &[u8; 32],
     ) -> Box<dyn UnitsLockIterator<Self::Error> + '_> {
-        let rt = match tokio::runtime::Runtime::new() {
-            Ok(rt) => rt,
-            Err(e) => {
-                let error = StorageError::Other(format!("Failed to create runtime: {}", e));
-                return Box::new(LockInfoOnceIterator::new(Err(error)));
-            }
-        };
-
         // Get locks for this transaction
-        let results = match rt.block_on(async {
-            sqlx::query(
-                r#"
-                SELECT object_id, lock_type, acquired_at, timeout_ms
-                FROM units_locks
-                WHERE transaction_hash = ?
-                "#,
-            )
+        let results = match self.rt.block_on(async {
+            sqlx::query(sql::GET_LOCKS_BY_TRANSACTION)
             .bind(transaction_hash.as_ref())
             .fetch_all(&self.pool)
             .await
@@ -525,7 +488,7 @@ impl PersistentLockManager for SqliteLockManager {
             Ok(rows) => rows,
             Err(e) => {
                 let error = StorageError::Database(format!("Failed to query transaction locks: {}", e));
-                return Box::new(LockInfoOnceIterator::new(Err(error)));
+                return Box::new(LockInfoIterator::once(Err(error)));
             }
         };
 
@@ -542,75 +505,45 @@ impl PersistentLockManager for SqliteLockManager {
             let mut id_array = [0u8; 32];
             id_array.copy_from_slice(&object_id_bytes);
             let object_id = UnitsObjectId::from_bytes(id_array);
-
-            let lock_type_str: String = row.get("lock_type");
-            let lock_type = match lock_type_str.as_str() {
-                "read" => LockType::Read,
-                "write" => LockType::Write,
-                _ => {
-                    let error = StorageError::Database(format!("Unknown lock type: {}", lock_type_str));
-                    lock_infos.push(Err(error));
-                    continue;
-                }
-            };
-
-            let acquired_at: i64 = row.get("acquired_at");
-            let timeout_ms: Option<i64> = row.get("timeout_ms");
-
-            lock_infos.push(Ok(LockInfo {
-                object_id,
-                lock_type,
-                transaction_hash: *transaction_hash,
-                acquired_at: acquired_at as u64,
-                timeout_ms: timeout_ms.map(|t| t as u64),
-            }));
+            
+            // Use the helper method to create the lock info
+            match self.row_to_lock_info(row, &object_id) {
+                Ok(mut lock_info) => {
+                    // Ensure transaction hash matches the requested one
+                    lock_info.transaction_hash = *transaction_hash;
+                    lock_infos.push(Ok(lock_info));
+                },
+                Err(e) => lock_infos.push(Err(e)),
+            }
         }
 
-        Box::new(LockInfoVecIterator(lock_infos.into_iter()))
+        Box::new(LockInfoIterator::from_vec(lock_infos))
     }
 
     fn get_object_locks(
         &self,
         object_id: &UnitsObjectId,
     ) -> Box<dyn UnitsLockIterator<Self::Error> + '_> {
-        let rt = match tokio::runtime::Runtime::new() {
-            Ok(rt) => rt,
-            Err(e) => {
-                let error = StorageError::Other(format!("Failed to create runtime: {}", e));
-                return Box::new(LockInfoOnceIterator::new(Err(error)));
-            }
-        };
-
-        match rt.block_on(self.get_all_object_locks_internal(object_id)) {
+        match self.rt.block_on(self.get_all_object_locks_internal(object_id)) {
             Ok(locks) => {
                 if locks.is_empty() {
-                    Box::new(EmptyLockIterator::new())
+                    Box::new(LockInfoIterator::empty())
                 } else {
-                    let iter = locks.into_iter().map(Ok);
-                    Box::new(LockInfoVecIterator(iter.collect::<Vec<_>>().into_iter()))
+                    Box::new(LockInfoIterator::from_lock_infos(locks))
                 }
             }
             Err(e) => {
-                Box::new(LockInfoOnceIterator::new(Err(e)))
+                Box::new(LockInfoIterator::once(Err(e)))
             }
         }
     }
 
     fn cleanup_expired_locks(&self) -> Result<usize, Self::Error> {
-        let rt = tokio::runtime::Runtime::new().map_err(|e| {
-            StorageError::Other(format!("Failed to create runtime: {}", e))
-        })?;
-
-        rt.block_on(async {
+        self.rt.block_on(async {
             let now = current_time_secs() as i64;
 
             // Delete all expired locks
-            let result = sqlx::query(
-                r#"
-                DELETE FROM units_locks
-                WHERE timeout_ms IS NOT NULL AND acquired_at + timeout_ms / 1000 <= ?
-                "#,
-            )
+            let result = sqlx::query(sql::DELETE_EXPIRED_LOCKS)
             .bind(now)
             .execute(&self.pool)
             .await
