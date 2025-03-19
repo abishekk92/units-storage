@@ -446,6 +446,18 @@ pub trait UnitsWriteAheadLog {
 
     /// Get an iterator over all WAL entries
     fn iterate_entries(&self) -> Box<dyn Iterator<Item = Result<WALEntry, StorageError>> + '_>;
+    
+    /// Get an iterator over WAL entries for a specific object
+    fn iterate_entries_for_object(&self, object_id: &UnitsObjectId) -> Box<dyn Iterator<Item = Result<WALEntry, StorageError>> + '_> {
+        // Default implementation filters all entries
+        Box::new(self.iterate_entries().filter(move |result| {
+            if let Ok(entry) = result {
+                entry.object.id() == object_id
+            } else {
+                true // Keep errors in the stream
+            }
+        }))
+    }
 }
 
 //==============================================================================

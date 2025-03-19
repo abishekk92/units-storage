@@ -12,12 +12,41 @@ use units_proofs::{StateProof, UnitsObjectProof};
 
 /// Entry type in the WAL
 #[derive(Debug, Clone, Serialize, Deserialize)]
-enum WALEntryType {
+pub enum WALEntryType {
     /// Update to an object's state
     ObjectUpdate(WALEntry),
 
     /// State proof for a slot
     StateProof(StateProof),
+}
+
+/// Common WAL functionality implemented for reuse
+pub trait WALWriter {
+    /// Write a WAL entry to storage
+    fn write_wal_entry(&self, entry: &WALEntryType) -> Result<(), StorageError>;
+    
+    /// Get the current timestamp in milliseconds
+    fn current_timestamp() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64
+    }
+    
+    /// Create a WAL entry for an object update
+    fn create_object_update_entry(
+        object: &UnitsObject,
+        proof: &UnitsObjectProof,
+        transaction_hash: Option<[u8; 32]>,
+    ) -> WALEntry {
+        WALEntry {
+            object: object.clone(),
+            slot: proof.slot,
+            proof: proof.clone(),
+            timestamp: Self::current_timestamp(),
+            transaction_hash,
+        }
+    }
 }
 
 /// A basic file-based write-ahead log implementation
@@ -37,13 +66,29 @@ impl FileWriteAheadLog {
             file: Arc::new(Mutex::new(None)),
         }
     }
+}
 
-    /// Get the current timestamp in milliseconds
-    fn current_timestamp() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64
+impl WALWriter for FileWriteAheadLog {
+    fn write_wal_entry(&self, entry: &WALEntryType) -> Result<(), StorageError> {
+        let mut file_guard = self
+            .file
+            .lock()
+            .map_err(|e| StorageError::WAL(format!("Failed to acquire lock: {}", e)))?;
+
+        let file = file_guard
+            .as_mut()
+            .ok_or_else(|| StorageError::WAL("WAL has not been initialized".to_string()))?;
+
+        // Serialize the entry
+        let serialized = bincode::serialize(entry)?;
+
+        // Write the entry length and data
+        let entry_len = serialized.len() as u64;
+        file.write_all(&entry_len.to_le_bytes())?;
+        file.write_all(&serialized)?;
+        file.flush()?;
+
+        Ok(())
     }
 }
 
@@ -83,58 +128,16 @@ impl UnitsWriteAheadLog for FileWriteAheadLog {
         proof: &UnitsObjectProof,
         transaction_hash: Option<[u8; 32]>,
     ) -> Result<(), StorageError> {
-        let mut file_guard = self
-            .file
-            .lock()
-            .map_err(|e| StorageError::WAL(format!("Failed to acquire lock: {}", e)))?;
+        // Create the WAL entry using the helper
+        let entry = Self::create_object_update_entry(object, proof, transaction_hash);
 
-        let file = file_guard
-            .as_mut()
-            .ok_or_else(|| StorageError::WAL("WAL has not been initialized".to_string()))?;
-
-        // Create the WAL entry
-        let entry = WALEntry {
-            object: object.clone(),
-            slot: proof.slot,
-            proof: proof.clone(),
-            timestamp: Self::current_timestamp(),
-            transaction_hash,
-        };
-
-        // Serialize the entry
-        let wal_entry = WALEntryType::ObjectUpdate(entry);
-        let serialized = bincode::serialize(&wal_entry)?;
-
-        // Write the entry length and data
-        let entry_len = serialized.len() as u64;
-        file.write_all(&entry_len.to_le_bytes())?;
-        file.write_all(&serialized)?;
-        file.flush()?;
-
-        Ok(())
+        // Use the common writer method
+        self.write_wal_entry(&WALEntryType::ObjectUpdate(entry))
     }
 
     fn record_state_proof(&self, state_proof: &StateProof) -> Result<(), StorageError> {
-        let mut file_guard = self
-            .file
-            .lock()
-            .map_err(|e| StorageError::WAL(format!("Failed to acquire lock: {}", e)))?;
-
-        let file = file_guard
-            .as_mut()
-            .ok_or_else(|| StorageError::WAL("WAL has not been initialized".to_string()))?;
-
-        // Create the WAL entry
-        let wal_entry = WALEntryType::StateProof(state_proof.clone());
-        let serialized = bincode::serialize(&wal_entry)?;
-
-        // Write the entry length and data
-        let entry_len = serialized.len() as u64;
-        file.write_all(&entry_len.to_le_bytes())?;
-        file.write_all(&serialized)?;
-        file.flush()?;
-
-        Ok(())
+        // Use the common writer method
+        self.write_wal_entry(&WALEntryType::StateProof(state_proof.clone()))
     }
 
     fn iterate_entries(&self) -> Box<dyn Iterator<Item = Result<WALEntry, StorageError>> + '_> {
@@ -163,15 +166,19 @@ impl UnitsWriteAheadLog for FileWriteAheadLog {
     }
 }
 
-/// Iterator over WAL entries
-struct WALEntryIterator {
+/// Common trait for WAL entry readers
+pub trait WALEntryReader {
+    /// Read the next entry from the WAL
+    fn read_next_entry(&mut self) -> Option<Result<WALEntryType, StorageError>>;
+}
+
+/// Iterator over WAL entries from a file
+pub struct WALEntryIterator {
     reader: BufReader<File>,
 }
 
-impl Iterator for WALEntryIterator {
-    type Item = Result<WALEntry, StorageError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
+impl WALEntryReader for WALEntryIterator {
+    fn read_next_entry(&mut self) -> Option<Result<WALEntryType, StorageError>> {
         // Read the entry length
         let mut len_buf = [0u8; 8];
         match self.reader.read_exact(&mut len_buf) {
@@ -196,12 +203,27 @@ impl Iterator for WALEntryIterator {
         // Deserialize the entry
         let entry_type: Result<WALEntryType, _> = bincode::deserialize(&entry_data);
         match entry_type {
-            Ok(WALEntryType::ObjectUpdate(entry)) => Some(Ok(entry)),
-            Ok(WALEntryType::StateProof(_)) => {
-                // Skip state proofs - this iterator only returns object updates
-                self.next()
-            }
+            Ok(entry) => Some(Ok(entry)),
             Err(e) => Some(Err(StorageError::from(e))),
+        }
+    }
+}
+
+impl Iterator for WALEntryIterator {
+    type Item = Result<WALEntry, StorageError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            // Read next entry
+            match self.read_next_entry() {
+                Some(Ok(WALEntryType::ObjectUpdate(entry))) => return Some(Ok(entry)),
+                Some(Ok(WALEntryType::StateProof(_))) => {
+                    // Skip state proofs and continue to next entry
+                    continue;
+                }
+                Some(Err(e)) => return Some(Err(e)),
+                None => return None,
+            }
         }
     }
 }

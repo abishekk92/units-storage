@@ -1,6 +1,7 @@
 #![cfg(feature = "sqlite")]
 
 use crate::lock_manager::SqliteLockManager;
+use crate::wal::WALWriter;
 use units_core::locks::PersistentLockManager;
 use crate::storage_traits::{
     TransactionReceiptStorage, UnitsProofIterator, UnitsReceiptIterator, UnitsStateProofIterator,
@@ -193,6 +194,11 @@ impl SqliteStorage {
             .execute(pool)
             .await?;
 
+        // Enable WAL journal mode for better performance and durability
+        sqlx::query("PRAGMA journal_mode=WAL")
+            .execute(pool)
+            .await?;
+
         // Table for objects - this is our base table
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS objects (
@@ -201,6 +207,21 @@ impl SqliteStorage {
                 token_type INTEGER NOT NULL,
                 token_manager BLOB NOT NULL,
                 data BLOB
+            )",
+        )
+            .execute(pool)
+            .await?;
+            
+        // Table for WAL entries
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS wal_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entry_type INTEGER NOT NULL,
+                object_id BLOB,
+                slot INTEGER NOT NULL,
+                timestamp INTEGER NOT NULL,
+                transaction_hash BLOB,
+                serialized_data BLOB NOT NULL
             )",
         )
         .execute(pool)
@@ -1344,35 +1365,190 @@ impl TransactionReceiptStorage for SqliteStorage {
     }
 }
 
-/// TDOO: Implement WAL for SQLite
+// Enum to track WAL entry types in the SQLite database
+enum SqliteWALEntryType {
+    ObjectUpdate = 1,
+    StateProof = 2,
+}
+
+/// WALWriter implementation for SQLite storage
+impl WALWriter for SqliteStorage {
+    fn write_wal_entry(&self, entry: &crate::wal::WALEntryType) -> Result<(), StorageError> {
+        // Serialize the entire entry
+        let serialized = bincode::serialize(entry)?;
+        
+        // Extract entry type and metadata for indexing
+        let (entry_type, object_id, slot, transaction_hash) = match entry {
+            crate::wal::WALEntryType::ObjectUpdate(update) => {
+                (
+                    SqliteWALEntryType::ObjectUpdate as i64,
+                    Some(update.object.id().as_bytes().to_vec()),
+                    update.slot as i64,
+                    update.transaction_hash.map(|hash| hash.to_vec()),
+                )
+            },
+            crate::wal::WALEntryType::StateProof(proof) => {
+                (
+                    SqliteWALEntryType::StateProof as i64,
+                    None,
+                    proof.slot as i64,
+                    None,
+                )
+            }
+        };
+        
+        // Get current timestamp
+        let timestamp = Self::current_timestamp() as i64;
+        
+        // Insert the entry into the WAL table
+        self.rt.block_on(async {
+            sqlx::query(
+                "INSERT INTO wal_entries (entry_type, object_id, slot, timestamp, transaction_hash, serialized_data) 
+                 VALUES (?, ?, ?, ?, ?, ?)"
+            )
+            .bind(entry_type)
+            .bind(object_id)
+            .bind(slot)
+            .bind(timestamp)
+            .bind(transaction_hash)
+            .bind(serialized)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::Database(format!("Failed to write WAL entry: {}", e)))
+        })
+    }
+}
+
+/// SQLite AsyncSource for WAL entries
+struct SqliteWALSource {
+    pool: SqlitePool,
+    object_id: Option<Vec<u8>>,
+    current_offset: i64,
+    batch_size: i64,
+}
+
+impl SqliteWALSource {
+    fn new(pool: SqlitePool, object_id: Option<UnitsObjectId>) -> Self {
+        Self {
+            pool,
+            object_id: object_id.map(|id| id.as_bytes().to_vec()),
+            current_offset: 0,
+            batch_size: 10,
+        }
+    }
+}
+
+impl AsyncSource<WALEntry, StorageError> for SqliteWALSource {
+    fn fetch_next(&mut self) -> futures::future::BoxFuture<'_, Option<Result<WALEntry, StorageError>>> {
+        let pool = self.pool.clone();
+        let offset = self.current_offset;
+        let batch_size = self.batch_size;
+        let object_id = self.object_id.clone();
+        
+        // Create a mutable reference to self.current_offset that can be captured and modified
+        let offset_ref = &mut self.current_offset;
+        
+        Box::pin(async move {
+            let query = if object_id.is_some() {
+                "SELECT serialized_data FROM wal_entries 
+                 WHERE entry_type = ? AND object_id = ? 
+                 ORDER BY timestamp DESC LIMIT ? OFFSET ?"
+            } else {
+                "SELECT serialized_data FROM wal_entries 
+                 WHERE entry_type = ? 
+                 ORDER BY timestamp DESC LIMIT ? OFFSET ?"
+            };
+            
+            let result = if let Some(obj_id) = &object_id {
+                sqlx::query(query)
+                    .bind(SqliteWALEntryType::ObjectUpdate as i64)
+                    .bind(obj_id)
+                    .bind(1i64) // Limit 1
+                    .bind(offset)
+                    .fetch_optional(&pool)
+                    .await
+            } else {
+                sqlx::query(query)
+                    .bind(SqliteWALEntryType::ObjectUpdate as i64)
+                    .bind(1i64) // Limit 1
+                    .bind(offset)
+                    .fetch_optional(&pool)
+                    .await
+            };
+            
+            match result {
+                Ok(Some(row)) => {
+                    // Get serialized data
+                    let serialized: Vec<u8> = row.get(0);
+                    
+                    // Increment offset for next fetch
+                    *offset_ref += 1;
+                    
+                    // Deserialize entry
+                    match bincode::deserialize::<crate::wal::WALEntryType>(&serialized) {
+                        Ok(crate::wal::WALEntryType::ObjectUpdate(entry)) => {
+                            Some(Ok(entry))
+                        },
+                        Ok(_) => {
+                            // Skip non-object entries and try next one
+                            SqliteWALSource {
+                                pool: pool.clone(),
+                                object_id: object_id.clone(),
+                                current_offset: *offset_ref,
+                                batch_size,
+                            }.fetch_next().await
+                        },
+                        Err(e) => Some(Err(StorageError::Deserialization(e.to_string()))),
+                    }
+                },
+                Ok(None) => None, // No more entries
+                Err(e) => Some(Err(StorageError::Database(e.to_string()))),
+            }
+        })
+    }
+}
+
 impl UnitsWriteAheadLog for SqliteStorage {
     fn init(&self, _path: &Path) -> Result<(), StorageError> {
         // SQLite storage doesn't require a separate WAL file initialization
-        // It uses its own WAL mechanism internally
+        // The table was already created in initialize_schema
         Ok(())
     }
 
     fn record_update(
         &self,
-        _object: &UnitsObject,
-        _proof: &UnitsObjectProof,
-        _transaction_hash: Option<[u8; 32]>,
+        object: &UnitsObject,
+        proof: &UnitsObjectProof,
+        transaction_hash: Option<[u8; 32]>,
     ) -> Result<(), StorageError> {
-        // SQLite doesn't implement a separate WAL yet
-        // This would require adding a new table for WAL entries
-        // For now, just return success
-        Ok(())
+        // Use the helper to create the entry
+        let entry = Self::create_object_update_entry(object, proof, transaction_hash);
+
+        // Use the common writer method
+        self.write_wal_entry(&crate::wal::WALEntryType::ObjectUpdate(entry))
     }
 
-    fn record_state_proof(&self, _state_proof: &StateProof) -> Result<(), StorageError> {
-        // SQLite doesn't implement a separate WAL yet
-        // For now, just return success
-        Ok(())
+    fn record_state_proof(&self, state_proof: &StateProof) -> Result<(), StorageError> {
+        // Use the common writer method
+        self.write_wal_entry(&crate::wal::WALEntryType::StateProof(state_proof.clone()))
     }
 
     fn iterate_entries(&self) -> Box<dyn Iterator<Item = Result<WALEntry, StorageError>> + '_> {
-        // Not implemented yet, return empty iterator
-        Box::new(std::iter::empty())
+        // Create an async source
+        let source = SqliteWALSource::new(self.pool.clone(), None);
+        
+        // Convert to an iterator
+        let adapter = AsyncSourceAdapter::new(source, self.rt.clone());
+        Box::new(adapter.into_iterator())
+    }
+    
+    fn iterate_entries_for_object(&self, object_id: &UnitsObjectId) -> Box<dyn Iterator<Item = Result<WALEntry, StorageError>> + '_> {
+        // Create an async source with object ID filter
+        let source = SqliteWALSource::new(self.pool.clone(), Some(*object_id));
+        
+        // Convert to an iterator
+        let adapter = AsyncSourceAdapter::new(source, self.rt.clone());
+        Box::new(adapter.into_iterator())
     }
 }
 
