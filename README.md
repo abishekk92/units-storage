@@ -17,14 +17,12 @@ The project is organized as a Cargo workspace with the following crates:
 
 - **units-proofs**: Cryptographic proof systems
   - Merkle Proofs
-  - Lattice Proofs
   - Proof Engines
   - State Proofs
 
 - **units-storage-impl**: Storage backends
   - Storage Traits
   - SQLite Implementation
-  - RocksDB Implementation
   - Write-Ahead Log
 
 - **units-runtime**: Runtime and verification
@@ -43,9 +41,7 @@ The project is organized as a Cargo workspace with the following crates:
 - **Write-Ahead Log**: Durable logging of all state changes for reliability
 - **Slot-Based Versioning**: Historical tracking of objects and their proofs
 - **Transaction Commitment Levels**: Support for processing, committed, and failed transaction states
-- **Multiple Backends**:
-  - SQLite implementation (default)
-  - RocksDB implementation (optional)
+- **SQLite Backend**: Reliable and efficient storage implementation
 
 ## Architecture
 
@@ -82,7 +78,7 @@ The storage system is organized into distinct layers:
 2. **Key-Value Store**:
    - Current state of all objects and their proofs
    - Optimized for fast reads and updates
-   - Multiple backend implementations (SQLite, RocksDB)
+   - SQLite backend implementation
 
 3. **Historical State**:
    - Versioned history of all objects and proofs
@@ -104,18 +100,11 @@ units-storage-impl = { version = "0.1.0", features = ["sqlite"] }
 units-runtime = "0.1.0"
 ```
 
-By default, the SQLite storage backend is enabled. If you want to use RocksDB:
+The SQLite storage backend is enabled by default:
 
 ```toml
 [dependencies]
-units-storage-impl = { version = "0.1.0", features = ["rocksdb"] }
-```
-
-To use both backends:
-
-```toml
-[dependencies]
-units-storage-impl = { version = "0.1.0", features = ["all"] }
+units-storage-impl = { version = "0.1.0", features = ["sqlite"] }
 ```
 
 ## Examples

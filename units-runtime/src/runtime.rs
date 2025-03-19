@@ -1,87 +1,25 @@
-// Import types from units-core
 use crate::runtime_backend::{ExecutionError, InstructionContext, RuntimeBackendManager};
 use std::collections::HashMap;
-pub use units_core::id::UnitsObjectId;
-pub use units_core::locks::AccessIntent;
-pub use units_core::objects::TokenizedObject;
-pub use units_core::transaction::{
-    CommitmentLevel, ConflictResult, Instruction, RuntimeType, Transaction, TransactionEffect,
-    TransactionHash, TransactionReceipt,
+use units_core::error::RuntimeError;
+use units_core::id::UnitsObjectId;
+use units_core::objects::UnitsObject;
+use units_core::transaction::{
+    CommitmentLevel, ConflictResult, Instruction, Transaction, TransactionHash, TransactionReceipt,
 };
 
-/// Runtime for executing transactions that modify TokenizedObjects
+/// Runtime for executing transactions and programs in the UNITS system
 pub trait Runtime {
     /// Get the runtime backend manager used by this runtime
     fn backend_manager(&self) -> &RuntimeBackendManager;
 
-    /// Check for potential conflicts with pending or recent transactions
-    ///
-    /// This allows detecting conflicts before executing a transaction.
-    /// Implementations should use a conflict checker from units-core.
-    ///
-    /// # Parameters
-    /// * `transaction` - The transaction to check for conflicts
-    ///
-    /// # Returns
-    /// A ConflictResult indicating whether conflicts were detected
-    fn check_conflicts(&self, _transaction: &Transaction) -> Result<ConflictResult, String> {
-        // Default implementation assumes no conflicts
-        // Real implementations should use a ConflictChecker from units-core
-        Ok(ConflictResult::NoConflict)
-    }
-
-    /// Execute a program call instruction that references a previously deployed program
-    ///
-    /// # Parameters
-    /// * `program_id` - The ID of the program object to execute
-    /// * `args` - Arguments to pass to the program
-    /// * `transaction_hash` - The hash of the transaction containing this instruction
-    /// * `objects` - The objects that this instruction has access to
-    /// * `parameters` - Additional runtime parameters for the instruction
-    ///
-    /// # Returns
-    /// A map of object IDs to their updated state after execution
-    fn execute_program_call(
-        &self,
-        program_id: &UnitsObjectId,
-        args: &[u8],
-        transaction_hash: &TransactionHash,
-        objects: HashMap<UnitsObjectId, TokenizedObject>,
-        parameters: HashMap<String, String>,
-    ) -> Result<HashMap<UnitsObjectId, TokenizedObject>, ExecutionError> {
-        // Create an instruction with the program args as parameters
-        let instruction = Instruction::new(
-            args.to_vec(),
-            RuntimeType::Wasm, // Default to Wasm runtime
-            vec![],
-            *program_id, // Use the program ID as the code object ID
-        );
-
-        let context = InstructionContext {
-            transaction_hash,
-            objects,
-            parameters,
-            program_id: Some(*program_id), // Set program_id to ensure we're using program call path
-            entrypoint: None,              // Will be set by execute_program_call
-        };
-
-        self.backend_manager()
-            .execute_program_call(program_id, &instruction, context)
-    }
+    //--------------------------------------------------------------------------
+    // TRANSACTION EXECUTION
+    //--------------------------------------------------------------------------
 
     /// Execute a transaction and return a transaction receipt with proofs
     fn execute_transaction(&self, transaction: Transaction) -> TransactionReceipt;
 
     /// Try to execute a transaction with conflict checking
-    ///
-    /// This method first checks for conflicts and only executes the transaction
-    /// if no conflicts are detected.
-    ///
-    /// # Parameters
-    /// * `transaction` - The transaction to execute
-    ///
-    /// # Returns
-    /// Either a receipt or a conflict error
     fn try_execute_transaction(
         &self,
         transaction: Transaction,
@@ -92,72 +30,83 @@ pub trait Runtime {
                 // No conflicts, execute the transaction
                 Ok(self.execute_transaction(transaction))
             }
-            Ok(conflict) => {
-                // Conflicts detected, return them
-                Err(conflict)
-            }
-            Err(_) => {
-                // Error checking conflicts, use a default error
-                Err(ConflictResult::Conflict(vec![]))
-            }
+            Ok(conflict) => Err(conflict),
+            Err(_) => Err(ConflictResult::Conflict(vec![])),
         }
     }
 
-    /// Rollback a previously executed transaction by reverting objects to their state
-    /// before the transaction was executed. This only works for transactions with a
-    /// Processing commitment level.
-    ///
-    /// # Parameters
-    /// * `transaction_hash` - The hash of the transaction to rollback
-    ///
-    /// # Returns
-    /// True if the rollback was successful, error message otherwise
-    fn rollback_transaction(&self, _transaction_hash: &TransactionHash) -> Result<bool, String>;
+    /// Check for potential conflicts with pending or recent transactions
+    fn check_conflicts(&self, _transaction: &Transaction) -> Result<ConflictResult, RuntimeError> {
+        // Default implementation assumes no conflicts
+        Ok(ConflictResult::NoConflict)
+    }
 
-    /// Update the commitment level of a transaction
-    ///
-    /// # Parameters
-    /// * `transaction_hash` - The hash of the transaction to update
-    /// * `commitment_level` - The new commitment level
-    ///
-    /// # Returns
-    /// Ok(()) if successful, Err with error message otherwise
-    fn update_commitment_level(
+    //--------------------------------------------------------------------------
+    // PROGRAM EXECUTION
+    //--------------------------------------------------------------------------
+
+    /// Execute a program call instruction
+    fn execute_program_call(
         &self,
-        _transaction_hash: &TransactionHash,
-        _commitment_level: CommitmentLevel,
-    ) -> Result<(), String> {
-        // Default implementation returns an error
-        Err("Updating commitment level not supported by this runtime".to_string())
+        program_id: &UnitsObjectId,
+        args: &[u8],
+        transaction_hash: &TransactionHash,
+        objects: HashMap<UnitsObjectId, UnitsObject>,
+        parameters: HashMap<String, String>,
+    ) -> Result<HashMap<UnitsObjectId, UnitsObject>, ExecutionError> {
+        // Create an instruction
+        let instruction = Instruction::new(
+            args.to_vec(),
+            self.backend_manager().default_runtime_type(),
+            vec![],
+            *program_id,
+        );
+
+        // Create execution context
+        let context = InstructionContext {
+            transaction_hash,
+            objects,
+            parameters,
+            program_id: Some(*program_id),
+            entrypoint: None,
+        };
+
+        // Execute the program
+        self.backend_manager()
+            .execute_program_call(program_id, &instruction, context)
     }
 
-    /// Commit a transaction, making its changes permanent and preventing rollback
-    ///
-    /// # Parameters
-    /// * `transaction_hash` - The hash of the transaction to commit
-    ///
-    /// # Returns
-    /// Ok(()) if successful, Err with error message otherwise
-    fn commit_transaction(&self, transaction_hash: &TransactionHash) -> Result<(), String> {
-        self.update_commitment_level(transaction_hash, CommitmentLevel::Committed)
-    }
-
-    /// Mark a transaction as failed
-    ///
-    /// # Parameters
-    /// * `transaction_hash` - The hash of the transaction to mark as failed
-    ///
-    /// # Returns
-    /// Ok(()) if successful, Err with error message otherwise
-    fn fail_transaction(&self, transaction_hash: &TransactionHash) -> Result<(), String> {
-        self.update_commitment_level(transaction_hash, CommitmentLevel::Failed)
-    }
+    //--------------------------------------------------------------------------
+    // TRANSACTION MANAGEMENT
+    //--------------------------------------------------------------------------
 
     /// Get a transaction by its hash
     fn get_transaction(&self, hash: &TransactionHash) -> Option<Transaction>;
 
-    /// Get a transaction receipt by the transaction hash
+    /// Get a transaction receipt by its hash
     fn get_transaction_receipt(&self, hash: &TransactionHash) -> Option<TransactionReceipt>;
+
+    /// Rollback a previously executed transaction
+    fn rollback_transaction(&self, transaction_hash: &TransactionHash) -> Result<bool, RuntimeError>;
+
+    /// Update a transaction's commitment level
+    fn update_commitment_level(
+        &self,
+        _transaction_hash: &TransactionHash,
+        _commitment_level: CommitmentLevel,
+    ) -> Result<(), RuntimeError> {
+        Err(RuntimeError::Unimplemented("Updating commitment level not supported".to_string()))
+    }
+
+    /// Commit a transaction
+    fn commit_transaction(&self, transaction_hash: &TransactionHash) -> Result<(), RuntimeError> {
+        self.update_commitment_level(transaction_hash, CommitmentLevel::Committed)
+    }
+
+    /// Mark a transaction as failed
+    fn fail_transaction(&self, transaction_hash: &TransactionHash) -> Result<(), RuntimeError> {
+        self.update_commitment_level(transaction_hash, CommitmentLevel::Failed)
+    }
 }
 
 #[cfg(test)]

@@ -5,9 +5,10 @@
 
 use std::collections::HashMap;
 use units_core::id::UnitsObjectId;
-use units_core::objects::TokenizedObject;
+use units_core::objects::UnitsObject;
 
-use units_proofs::{ProofEngine, SlotNumber, StateProof, TokenizedObjectProof, VerificationResult};
+use units_proofs::UnitsObjectProof;
+use units_proofs::{ProofEngine, SlotNumber, StateProof, VerificationResult};
 
 use units_core::transaction::TransactionReceipt;
 
@@ -34,8 +35,8 @@ impl<'a> ProofVerifier<'a> {
     /// A VerificationResult indicating whether the proof is valid
     pub fn verify_object_proof(
         &self,
-        object: &TokenizedObject,
-        proof: &TokenizedObjectProof,
+        object: &UnitsObject,
+        proof: &UnitsObjectProof,
     ) -> VerificationResult {
         match self.engine.verify_object_proof(object, proof) {
             Ok(true) => VerificationResult::Valid,
@@ -58,8 +59,8 @@ impl<'a> ProofVerifier<'a> {
     /// A VerificationResult indicating whether the proof chain is valid
     pub fn verify_proof_chain(
         &self,
-        object_states: &[(SlotNumber, TokenizedObject)],
-        proofs: &[(SlotNumber, TokenizedObjectProof)],
+        object_states: &[(SlotNumber, UnitsObject)],
+        proofs: &[(SlotNumber, UnitsObjectProof)],
     ) -> VerificationResult {
         // Delegate to the proof engine's implementation
         self.engine.verify_proof_history(object_states, proofs)
@@ -76,14 +77,14 @@ impl<'a> ProofVerifier<'a> {
     pub fn verify_transaction_receipt(
         &self,
         receipt: &TransactionReceipt,
-        objects: &HashMap<UnitsObjectId, TokenizedObject>,
+        objects: &HashMap<UnitsObjectId, UnitsObject>,
     ) -> VerificationResult {
         // Verify each object proof in the receipt
         for (id, _proof_data) in &receipt.object_proofs {
             if !objects.contains_key(id) {
                 return VerificationResult::MissingData(format!("Missing object for ID {:?}", id));
             }
-            
+
             // Note: In the new structure, we don't verify individual proofs here
             // because the raw proof data would need to be deserialized first
             // In a real implementation, we would:
@@ -106,10 +107,10 @@ impl<'a> ProofVerifier<'a> {
     pub fn verify_state_proof(
         &self,
         state_proof: &StateProof,
-        object_proofs: &HashMap<UnitsObjectId, TokenizedObjectProof>,
+        object_proofs: &HashMap<UnitsObjectId, UnitsObjectProof>,
     ) -> VerificationResult {
         // Convert HashMap to the format expected by the proof engine
-        let object_proof_pairs: Vec<(UnitsObjectId, TokenizedObjectProof)> = object_proofs
+        let object_proof_pairs: Vec<(UnitsObjectId, UnitsObjectProof)> = object_proofs
             .iter()
             .map(|(id, proof)| (*id, proof.clone()))
             .collect();
@@ -201,14 +202,13 @@ pub fn detect_double_spend(
 mod tests {
     use super::*;
     use units_core::id::UnitsObjectId;
-    use units_core::objects::TokenType;
-    use units_proofs::lattice_proof_engine::LatticeProofEngine;
+    use units_proofs::merkle_proof::MerkleProofEngine;
 
-    fn create_test_object() -> TokenizedObject {
-        TokenizedObject::new(
+    fn create_test_object() -> UnitsObject {
+        UnitsObject::new_token(
             UnitsObjectId::unique_id_for_tests(),
             UnitsObjectId::unique_id_for_tests(),
-            TokenType::Native,
+            units_core::objects::TokenType::Native,
             UnitsObjectId::unique_id_for_tests(),
             vec![1, 2, 3, 4],
         )
@@ -217,7 +217,7 @@ mod tests {
     #[test]
     fn test_verify_object_proof() {
         // Create a test object and generate a proof
-        let engine = LatticeProofEngine::new();
+        let engine = MerkleProofEngine::new();
         let object = create_test_object();
 
         // Generate a valid proof
@@ -231,11 +231,11 @@ mod tests {
         assert_eq!(result, VerificationResult::Valid);
 
         // Modify the object and verify the proof should fail
-        let modified_object = TokenizedObject::new(
+        let modified_object = UnitsObject::new_token(
             *object.id(),
-            *object.holder(),
-            object.token_type,
-            object.token_manager,
+            *object.owner(),
+            object.token_type().unwrap(),
+            *object.token_manager().unwrap(),
             vec![5, 6, 7, 8],
         );
 
@@ -246,7 +246,7 @@ mod tests {
     #[test]
     fn test_verify_transaction_receipt() {
         // Create test objects and proofs
-        let engine = LatticeProofEngine::new();
+        let engine = MerkleProofEngine::new();
         let object1 = create_test_object();
         let object2 = create_test_object();
 
@@ -284,7 +284,7 @@ mod tests {
         // Missing object scenario
         let mut missing_objects = objects.clone();
         missing_objects.remove(object1.id());
-        
+
         let missing_result = verifier.verify_transaction_receipt(&receipt, &missing_objects);
         assert!(matches!(missing_result, VerificationResult::MissingData(_)));
     }

@@ -13,3 +13,7 @@ units-core.workspace = true
 units-proofs.workspace = true
 units-storage-impl = { workspace = true, features = ["all"] }
 units-runtime.workspace = true
+
+[features]
+default = []
+all = []

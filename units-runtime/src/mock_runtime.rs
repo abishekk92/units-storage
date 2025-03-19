@@ -1,9 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
-use units_core::error::StorageError;
+use units_core::error::{RuntimeError, StorageError};
 use units_core::id::UnitsObjectId;
-use units_core::objects::TokenizedObject;
+use units_core::objects::UnitsObject;
 use units_core::scheduler::{BasicConflictChecker, ConflictChecker};
 use units_core::transaction::{
     CommitmentLevel, ConflictResult, Transaction, TransactionEffect, TransactionHash,
@@ -26,7 +26,7 @@ pub struct MockRuntime {
     /// The runtime backend manager for executing instructions
     backend_manager: RuntimeBackendManager,
     /// Mock objects in memory (used for testing)
-    objects: HashMap<UnitsObjectId, TokenizedObject>,
+    objects: HashMap<UnitsObjectId, UnitsObject>,
 }
 
 impl MockRuntime {
@@ -71,8 +71,8 @@ impl MockRuntime {
 
 impl MockRuntime {
     // Add a method to add objects for testing
-    pub fn add_object(&mut self, object: TokenizedObject) {
-        self.objects.insert(*object.id(), object);
+    pub fn add_object(&mut self, object: UnitsObject) {
+        self.objects.insert(object.id, object);
     }
 }
 
@@ -80,7 +80,7 @@ impl Runtime for MockRuntime {
     fn backend_manager(&self) -> &RuntimeBackendManager {
         &self.backend_manager
     }
-    fn check_conflicts(&self, transaction: &Transaction) -> Result<ConflictResult, String> {
+    fn check_conflicts(&self, transaction: &Transaction) -> Result<ConflictResult, RuntimeError> {
         // Get recent transactions for testing (last 10)
         let recent_transactions: Vec<_> = self.transactions.values().cloned().collect();
         let recent_transactions = recent_transactions
@@ -93,6 +93,7 @@ impl Runtime for MockRuntime {
         // Use the BasicConflictChecker from units-core
         let checker = BasicConflictChecker::new();
         checker.check_conflicts(transaction, &recent_transactions)
+            .map_err(|err| RuntimeError::Transaction(err))
     }
 
     fn execute_transaction(&self, transaction: Transaction) -> TransactionReceipt {
@@ -171,25 +172,25 @@ impl Runtime for MockRuntime {
         receipt
     }
 
-    fn rollback_transaction(&self, transaction_hash: &TransactionHash) -> Result<bool, String> {
+    fn rollback_transaction(&self, transaction_hash: &TransactionHash) -> Result<bool, RuntimeError> {
         // Check if the transaction exists
         let transaction = match self.get_transaction(transaction_hash) {
             Some(tx) => tx,
-            None => return Err("Transaction not found".to_string()),
+            None => return Err(RuntimeError::Transaction("Transaction not found".to_string())),
         };
 
         // Check if we have a receipt for this transaction
         match self.get_transaction_receipt(transaction_hash) {
             Some(receipt) => receipt,
-            None => return Err("Transaction receipt not found".to_string()),
+            None => return Err(RuntimeError::Transaction("Transaction receipt not found".to_string())),
         };
 
         // Check if the transaction can be rolled back based on its commitment level
         if !transaction.can_rollback() {
-            return Err(format!(
+            return Err(RuntimeError::Transaction(format!(
                 "Cannot rollback transaction with commitment level {:?}. Only Processing transactions can be rolled back.",
                 transaction.commitment_level
-            ));
+            )));
         }
 
         let mut mock = self.clone();
@@ -222,7 +223,7 @@ impl Runtime for MockRuntime {
         &self,
         transaction_hash: &TransactionHash,
         commitment_level: CommitmentLevel,
-    ) -> Result<(), String> {
+    ) -> Result<(), RuntimeError> {
         let mut mock = self.clone();
 
         // Update transaction commitment level
@@ -233,21 +234,21 @@ impl Runtime for MockRuntime {
                 (CommitmentLevel::Processing, _) => {}
                 // Cannot change from Committed or Failed
                 (CommitmentLevel::Committed, _) => {
-                    return Err(
+                    return Err(RuntimeError::Transaction(
                         "Cannot change commitment level of a Committed transaction".to_string()
-                    );
+                    ));
                 }
                 (CommitmentLevel::Failed, _) => {
-                    return Err(
+                    return Err(RuntimeError::Transaction(
                         "Cannot change commitment level of a Failed transaction".to_string()
-                    );
+                    ));
                 }
             }
 
             tx.commitment_level = commitment_level;
             mock.transactions.insert(*transaction_hash, tx);
         } else {
-            return Err("Transaction not found".to_string());
+            return Err(RuntimeError::Transaction("Transaction not found".to_string()));
         }
 
         // Update receipt commitment level

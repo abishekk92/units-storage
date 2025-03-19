@@ -1,6 +1,4 @@
 pub mod engine;
-pub mod lattice_hash;
-pub mod lattice_proof_engine;
 pub mod merkle_proof;
 
 // Re-export the main types for convenience

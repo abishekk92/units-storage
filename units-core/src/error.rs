@@ -1,6 +1,42 @@
 use std::io;
 use thiserror::Error;
 
+/// Represents runtime execution errors
+#[derive(Error, Debug)]
+pub enum RuntimeError {
+    /// Storage related errors
+    #[error("Storage error: {0}")]
+    Storage(#[from] StorageError),
+    
+    /// Transaction processing errors
+    #[error("Transaction error: {0}")]
+    Transaction(String),
+    
+    /// Program execution errors
+    #[error("Program execution error: {0}")]
+    Execution(String),
+    
+    /// Feature not implemented
+    #[error("Unimplemented: {0}")]
+    Unimplemented(String),
+    
+    /// Generic errors that don't fit in other categories
+    #[error("Other error: {0}")]
+    Other(String),
+}
+
+impl From<String> for RuntimeError {
+    fn from(err: String) -> Self {
+        RuntimeError::Other(err)
+    }
+}
+
+impl From<&str> for RuntimeError {
+    fn from(err: &str) -> Self {
+        RuntimeError::Other(err.to_string())
+    }
+}
+
 /// Represents all possible errors that can occur when interacting with UNITS storage
 #[derive(Error, Debug)]
 pub enum StorageError {
@@ -77,12 +113,6 @@ impl From<bincode::Error> for StorageError {
     }
 }
 
-#[cfg(feature = "rocksdb")]
-impl From<rocksdb::Error> for StorageError {
-    fn from(err: rocksdb::Error) -> Self {
-        StorageError::Database(err.to_string())
-    }
-}
 
 #[cfg(feature = "sqlite")]
 impl From<sqlx::Error> for StorageError {

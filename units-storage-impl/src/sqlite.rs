@@ -1,14 +1,11 @@
 #![cfg(feature = "sqlite")]
 
 use crate::lock_manager::SqliteLockManager;
+use units_core::locks::PersistentLockManager;
 use crate::storage_traits::{
-    UnitsProofIterator, UnitsReceiptIterator, UnitsStateProofIterator, UnitsStorage, 
-    UnitsStorageIterator, UnitsStorageProofEngine, TransactionReceiptStorage, 
-    UnitsWriteAheadLog, WALEntry,
+    TransactionReceiptStorage, UnitsProofIterator, UnitsReceiptIterator, UnitsStateProofIterator,
+    UnitsStorage, UnitsStorageIterator, UnitsStorageProofEngine, UnitsWriteAheadLog, WALEntry,
 };
-use crate::lock_manager::{LockManagerTrait, LockManagerAdapter};
-use units_core::locks::{AccessIntent, LockInfo, LockType, PersistentLockManager};
-use units_core::transaction::{CommitmentLevel, TransactionReceipt};
 use anyhow::{Context, Result};
 use log;
 use sqlx::{
@@ -24,7 +21,8 @@ use tokio::runtime::Runtime;
 use units_core::error::StorageError;
 use units_core::id::UnitsObjectId;
 use units_core::objects::{ObjectType, TokenType, UnitsObject};
-use units_proofs::lattice_proof_engine::LatticeProofEngine;
+use units_core::transaction::{CommitmentLevel, TransactionReceipt};
+use units_proofs::merkle_proof::MerkleProofEngine;
 use units_proofs::SlotNumber;
 use units_proofs::{ProofEngine, StateProof, UnitsObjectProof, VerificationResult};
 
@@ -33,7 +31,7 @@ pub struct SqliteStorage {
     pool: SqlitePool,
     rt: Arc<Runtime>,
     db_path: PathBuf,
-    proof_engine: LatticeProofEngine,
+    proof_engine: MerkleProofEngine,
     lock_manager: SqliteLockManager,
 }
 
@@ -49,8 +47,8 @@ pub struct SqliteReceiptIterator {
     pool: SqlitePool,
     rt: Arc<Runtime>,
     query: String,
-    object_id_param: Option<Vec<u8>>,  // For object ID queries
-    slot_param: Option<i64>,           // For slot queries
+    object_id_param: Option<Vec<u8>>, // For object ID queries
+    slot_param: Option<i64>,          // For slot queries
     current_index: i64,
     page_size: i64,
 }
@@ -95,16 +93,13 @@ impl SqliteStorage {
         }
 
         // Initialize the lock manager
-        let lock_manager = match SqliteLockManager::new(pool.clone(), rt.clone()) {
-            Ok(lm) => lm,
-            Err(e) => return Err(format!("Failed to initialize lock manager: {}", e)),
-        };
+        let lock_manager = SqliteLockManager::new(pool.clone());
 
         Ok(Self {
             pool,
             rt,
             db_path,
-            proof_engine: LatticeProofEngine::new(),
+            proof_engine: MerkleProofEngine::new(),
             lock_manager,
         })
     }
@@ -134,7 +129,7 @@ impl SqliteStorage {
             "CREATE TABLE IF NOT EXISTS slots (
                 slot_number INTEGER PRIMARY KEY,
                 timestamp INTEGER NOT NULL
-            )"
+            )",
         )
         .execute(pool)
         .await?;
@@ -214,7 +209,7 @@ impl SqliteStorage {
         )
         .execute(pool)
         .await?;
-        
+
         // Table for historical object states
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS object_history (
@@ -227,60 +222,60 @@ impl SqliteStorage {
                 PRIMARY KEY (object_id, slot),
                 FOREIGN KEY (object_id) REFERENCES objects(id) ON DELETE CASCADE,
                 FOREIGN KEY (slot) REFERENCES slots(slot_number) ON DELETE CASCADE
-            )"
+            )",
         )
         .execute(pool)
         .await?;
 
         // Create indexes for efficient queries
-        
+
         // Slot-based indexes
         sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_transaction_receipts_slot 
+            "CREATE INDEX IF NOT EXISTS idx_transaction_receipts_slot
              ON transaction_receipts(slot)",
         )
         .execute(pool)
         .await?;
-        
+
         sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_object_proofs_slot 
+            "CREATE INDEX IF NOT EXISTS idx_object_proofs_slot
              ON object_proofs(slot)",
         )
         .execute(pool)
         .await?;
-        
+
         sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_state_proofs_slot 
+            "CREATE INDEX IF NOT EXISTS idx_state_proofs_slot
              ON state_proofs(slot)",
         )
         .execute(pool)
         .await?;
-        
+
         // Object-based indexes
         sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_object_transactions_object_id 
+            "CREATE INDEX IF NOT EXISTS idx_object_transactions_object_id
              ON object_transactions(object_id)",
         )
         .execute(pool)
         .await?;
-        
+
         sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_wal_entries_object_id 
+            "CREATE INDEX IF NOT EXISTS idx_wal_entries_object_id
              ON wal_entries(object_id)",
         )
         .execute(pool)
         .await?;
-        
+
         sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_object_history_object_id 
+            "CREATE INDEX IF NOT EXISTS idx_object_history_object_id
              ON object_history(object_id)",
         )
         .execute(pool)
         .await?;
-        
+
         // Transaction-based indexes
         sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_wal_entries_transaction_hash 
+            "CREATE INDEX IF NOT EXISTS idx_wal_entries_transaction_hash
              ON wal_entries(transaction_hash) WHERE transaction_hash IS NOT NULL",
         )
         .execute(pool)
@@ -308,7 +303,7 @@ impl SqliteStorage {
 }
 
 impl UnitsStorage for SqliteStorage {
-    fn lock_manager(&self) -> &dyn LockManagerTrait<Error = StorageError> {
+    fn lock_manager(&self) -> &dyn PersistentLockManager<Error = StorageError> {
         &self.lock_manager
     }
 
@@ -360,7 +355,7 @@ impl UnitsStorage for SqliteStorage {
             }
 
             // Convert token type
-            let object_type = match SqliteStorage::int_to_object_type(token_type_int) {
+            let _object_type = match SqliteStorage::int_to_object_type(token_type_int) {
                 Ok(tt) => tt,
                 Err(e) => return Err(StorageError::Other(e)),
             };
@@ -395,19 +390,24 @@ impl UnitsStorage for SqliteStorage {
                 .bind(slot as i64)
                 .fetch_optional(&self.pool)
                 .await
-                .with_context(|| format!("Failed to fetch object history for ID: {:?} at slot {}", id, slot))?;
+                .with_context(|| {
+                    format!(
+                        "Failed to fetch object history for ID: {:?} at slot {}",
+                        id, slot
+                    )
+                })?;
 
             if let Some(row) = row {
                 let holder_blob: Vec<u8> = row.get(0);
                 let token_type_int: i64 = row.get(1);
                 let token_manager_blob: Vec<u8> = row.get(2);
                 let data: Option<Vec<u8>> = row.get(3);
-                
+
                 // If data is NULL, this was a tombstone record (deletion marker)
                 if data.is_none() {
                     return Ok(None);
                 }
-                
+
                 let data = data.unwrap_or_default();
 
                 // Convert to UnitsObjectId
@@ -423,7 +423,7 @@ impl UnitsStorage for SqliteStorage {
                 }
 
                 // Convert token type
-                let object_type = match Self::int_to_object_type(token_type_int) {
+                let _object_type = match Self::int_to_object_type(token_type_int) {
                     Ok(tt) => tt,
                     Err(e) => return Err(StorageError::Other(e)),
                 };
@@ -480,7 +480,7 @@ impl UnitsStorage for SqliteStorage {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
-                
+
             sqlx::query("INSERT OR IGNORE INTO slots (slot_number, timestamp) VALUES (?, ?)")
                 .bind(proof.slot as i64)
                 .bind(current_time as i64)
@@ -498,7 +498,7 @@ impl UnitsStorage for SqliteStorage {
                 .execute(&mut *tx)
                 .await
                 .with_context(|| format!("Failed to store proof for object ID: {:?}", object.id()))?;
-                
+
             // Store a snapshot in the object history table
             sqlx::query("INSERT OR REPLACE INTO object_history (object_id, slot, holder, token_type, token_manager, data) VALUES (?, ?, ?, ?, ?, ?)")
                 .bind(object.id().as_ref())
@@ -518,7 +518,7 @@ impl UnitsStorage for SqliteStorage {
 
             // Record update in the write-ahead log
             // This would typically be implemented by a WAL implementation
-            
+
             Ok(proof)
         })
     }
@@ -565,20 +565,20 @@ impl UnitsStorage for SqliteStorage {
                 .begin()
                 .await
                 .with_context(|| "Failed to start transaction for delete operation")?;
-                
+
             // Ensure the slot exists in the slots table (for foreign key constraint)
             let current_time = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
-                
+
             sqlx::query("INSERT OR IGNORE INTO slots (slot_number, timestamp) VALUES (?, ?)")
                 .bind(proof.slot as i64)
                 .bind(current_time as i64)
                 .execute(&mut *tx)
                 .await
                 .with_context(|| format!("Failed to register slot: {}", proof.slot))?;
-                
+
             // Create a special historical entry for the deletion
             let token_type_int = Self::object_type_to_int(&object.object_type);
             sqlx::query("INSERT INTO object_history (object_id, slot, holder, token_type, token_manager, data) VALUES (?, ?, ?, ?, ?, NULL)")
@@ -639,20 +639,21 @@ impl UnitsStorageProofEngine for SqliteStorage {
     fn generate_state_proof(&self, slot: Option<SlotNumber>) -> Result<StateProof, StorageError> {
         self.rt.block_on(async {
             // Use a transaction to ensure consistency
-            let mut tx = self.pool
+            let mut tx = self
+                .pool
                 .begin()
                 .await
                 .with_context(|| "Failed to start transaction for state proof generation")?;
-                
+
             // Use provided slot or current slot
             let slot_to_use = slot.unwrap_or(1234u64); // Mock slot for testing
-            
+
             // Ensure the slot exists in the slots table (for foreign key constraint)
             let current_time = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
-                
+
             sqlx::query("INSERT OR IGNORE INTO slots (slot_number, timestamp) VALUES (?, ?)")
                 .bind(slot_to_use as i64)
                 .bind(current_time as i64)
@@ -711,12 +712,14 @@ impl UnitsStorageProofEngine for SqliteStorage {
             // Generate the state proof
             // Get the latest state proof if one exists
             let query = "SELECT proof_data FROM state_proofs ORDER BY id DESC LIMIT 1";
-            let latest_state_proof_row = sqlx::query(query).fetch_optional(&self.pool).await
+            let latest_state_proof_row = sqlx::query(query)
+                .fetch_optional(&self.pool)
+                .await
                 .with_context(|| "Failed to fetch latest state proof")?;
-                
+
             let latest_state_proof = if let Some(row) = latest_state_proof_row {
                 let proof_data: Vec<u8> = row.get(0);
-                // Construct a basic StateProof - note that in a real implementation 
+                // Construct a basic StateProof - note that in a real implementation
                 // we would need to deserialize the full proof
                 Some(StateProof {
                     slot: 0, // This will be replaced by the engine
@@ -727,7 +730,7 @@ impl UnitsStorageProofEngine for SqliteStorage {
             } else {
                 None
             };
-            
+
             // Generate the state proof with the latest state proof if available
             let state_proof = self.proof_engine.generate_state_proof(
                 &object_proofs,
@@ -743,7 +746,7 @@ impl UnitsStorageProofEngine for SqliteStorage {
                 .execute(&mut *tx)
                 .await
                 .with_context(|| "Failed to store state proof")?;
-                
+
             // Commit the transaction
             tx.commit()
                 .await
@@ -769,7 +772,7 @@ impl UnitsStorageProofEngine for SqliteStorage {
                 let slot: i64 = row.get(1);
                 let prev_proof_hash_blob: Option<Vec<u8>> = row.get(2);
                 let transaction_hash_blob: Option<Vec<u8>> = row.get(3);
-                
+
                 // Convert blob to array
                 let prev_proof_hash = prev_proof_hash_blob.map(|blob| {
                     let mut hash = [0u8; 32];
@@ -778,7 +781,7 @@ impl UnitsStorageProofEngine for SqliteStorage {
                     }
                     hash
                 });
-                
+
                 // Convert blob to array
                 let transaction_hash = transaction_hash_blob.map(|blob| {
                     let mut hash = [0u8; 32];
@@ -787,12 +790,12 @@ impl UnitsStorageProofEngine for SqliteStorage {
                     }
                     hash
                 });
-                
+
                 // Create object ID with dummy data for compatibility
                 let object_id = UnitsObjectId::default();
                 let object_hash = [0u8; 32];
-                
-                return Ok(Some(UnitsObjectProof { 
+
+                return Ok(Some(UnitsObjectProof {
                     object_id,
                     slot: slot as u64,
                     object_hash,
@@ -991,7 +994,7 @@ impl Iterator for SqliteStorageIterator {
             }
 
             // Convert token type
-            let object_type = match SqliteStorage::int_to_object_type(token_type_int) {
+            let _object_type = match SqliteStorage::int_to_object_type(token_type_int) {
                 Ok(tt) => tt,
                 Err(e) => return Some(Err(StorageError::Other(e))),
             };
@@ -1018,8 +1021,11 @@ impl Iterator for SqliteReceiptIterator {
     fn next(&mut self) -> Option<Self::Item> {
         self.rt.block_on(async {
             // Build the query with pagination
-            let paged_query = format!("{} LIMIT {} OFFSET {}", self.query, self.page_size, self.current_index);
-            
+            let paged_query = format!(
+                "{} LIMIT {} OFFSET {}",
+                self.query, self.page_size, self.current_index
+            );
+
             // Create a query builder with the appropriate parameters
             let query_result = if let Some(obj_id) = &self.object_id_param {
                 sqlx::query(&paged_query)
@@ -1033,11 +1039,9 @@ impl Iterator for SqliteReceiptIterator {
                     .await
             } else {
                 // Query without parameters
-                sqlx::query(&paged_query)
-                    .fetch_optional(&self.pool)
-                    .await
+                sqlx::query(&paged_query).fetch_optional(&self.pool).await
             };
-            
+
             // Process the query results
             let row = match query_result {
                 Ok(Some(row)) => row,
@@ -1054,9 +1058,12 @@ impl Iterator for SqliteReceiptIterator {
             // Deserialize the receipt
             let receipt: TransactionReceipt = match bincode::deserialize(&receipt_data) {
                 Ok(r) => r,
-                Err(e) => return Some(Err(StorageError::Serialization(format!(
-                    "Failed to deserialize transaction receipt: {}", e
-                )))),
+                Err(e) => {
+                    return Some(Err(StorageError::Serialization(format!(
+                        "Failed to deserialize transaction receipt: {}",
+                        e
+                    ))))
+                }
             };
 
             // Increment the index for the next call
@@ -1085,34 +1092,34 @@ impl TransactionReceiptStorage for SqliteStorage {
                 .begin()
                 .await
                 .with_context(|| "Failed to start database transaction for storing receipt")?;
-                
+
             // Ensure the slot exists in the slots table (for foreign key constraint)
             let current_time = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
-                
+
             sqlx::query("INSERT OR IGNORE INTO slots (slot_number, timestamp) VALUES (?, ?)")
                 .bind(receipt.slot as i64)
                 .bind(current_time as i64)
                 .execute(&mut *tx)
                 .await
                 .with_context(|| format!("Failed to register slot: {}", receipt.slot))?;
-            
+
             // Serialize the receipt
             let receipt_data = bincode::serialize(receipt)
                 .with_context(|| format!("Failed to serialize receipt for transaction hash {:?}", receipt.transaction_hash))?;
-            
+
             // Insert or replace the receipt in the transaction_receipts table
             let commitment_level_int = match receipt.commitment_level {
                 CommitmentLevel::Processing => 0,
                 CommitmentLevel::Committed => 1,
                 CommitmentLevel::Failed => 2,
             };
-            
+
             sqlx::query(
-                "INSERT OR REPLACE INTO transaction_receipts 
-                (transaction_hash, slot, timestamp, success, commitment_level, error_message, receipt_data) 
+                "INSERT OR REPLACE INTO transaction_receipts
+                (transaction_hash, slot, timestamp, success, commitment_level, error_message, receipt_data)
                 VALUES (?, ?, ?, ?, ?, ?, ?)"
             )
             .bind(receipt.transaction_hash.as_ref())
@@ -1125,7 +1132,7 @@ impl TransactionReceiptStorage for SqliteStorage {
             .execute(&mut *tx)
             .await
             .with_context(|| format!("Failed to store receipt for transaction hash {:?}", receipt.transaction_hash))?;
-            
+
             // Clear any previous object mappings for this transaction
             sqlx::query(
                 "DELETE FROM object_transactions WHERE transaction_hash = ?"
@@ -1134,19 +1141,19 @@ impl TransactionReceiptStorage for SqliteStorage {
             .execute(&mut *tx)
             .await
             .with_context(|| format!("Failed to clear previous object mappings for transaction hash {:?}", receipt.transaction_hash))?;
-            
+
             // Insert mappings for all objects affected by this transaction
             for object_id in receipt.object_proofs.keys() {
                 // Ensure the object exists (insert a placeholder if needed for foreign key constraint)
                 sqlx::query(
-                    "INSERT OR IGNORE INTO objects (id, holder, token_type, token_manager, data) 
+                    "INSERT OR IGNORE INTO objects (id, holder, token_type, token_manager, data)
                      VALUES (?, zeroblob(32), 0, zeroblob(32), NULL)"
                 )
                 .bind(object_id.as_ref())
                 .execute(&mut *tx)
                 .await
                 .with_context(|| format!("Failed to ensure object exists: {:?}", object_id))?;
-                
+
                 sqlx::query(
                     "INSERT INTO object_transactions (object_id, transaction_hash, slot) VALUES (?, ?, ?)"
                 )
@@ -1155,27 +1162,27 @@ impl TransactionReceiptStorage for SqliteStorage {
                 .bind(receipt.slot as i64)
                 .execute(&mut *tx)
                 .await
-                .with_context(|| format!("Failed to store object mapping for transaction hash {:?} and object ID {:?}", 
+                .with_context(|| format!("Failed to store object mapping for transaction hash {:?} and object ID {:?}",
                                         receipt.transaction_hash, object_id))?;
             }
-            
+
             // For effects that don't have proofs yet (e.g., in Processing state)
             for effect in &receipt.effects {
                 // Skip if we already added an entry for this object ID
                 if receipt.object_proofs.contains_key(&effect.object_id) {
                     continue;
                 }
-                
+
                 // Ensure the object exists (insert a placeholder if needed for foreign key constraint)
                 sqlx::query(
-                    "INSERT OR IGNORE INTO objects (id, holder, token_type, token_manager, data) 
+                    "INSERT OR IGNORE INTO objects (id, holder, token_type, token_manager, data)
                      VALUES (?, zeroblob(32), 0, zeroblob(32), NULL)"
                 )
                 .bind(effect.object_id.as_ref())
                 .execute(&mut *tx)
                 .await
                 .with_context(|| format!("Failed to ensure object exists: {:?}", effect.object_id))?;
-                
+
                 sqlx::query(
                     "INSERT INTO object_transactions (object_id, transaction_hash, slot) VALUES (?, ?, ?)"
                 )
@@ -1184,54 +1191,59 @@ impl TransactionReceiptStorage for SqliteStorage {
                 .bind(receipt.slot as i64)
                 .execute(&mut *tx)
                 .await
-                .with_context(|| format!("Failed to store object effect mapping for transaction hash {:?} and object ID {:?}", 
+                .with_context(|| format!("Failed to store object effect mapping for transaction hash {:?} and object ID {:?}",
                                         receipt.transaction_hash, effect.object_id))?;
             }
-            
+
             // Commit the transaction
             tx.commit()
                 .await
                 .with_context(|| format!("Failed to commit transaction for storing receipt {:?}", receipt.transaction_hash))?;
-            
+
             Ok(())
         })
     }
-    
+
     fn get_receipt(&self, hash: &[u8; 32]) -> Result<Option<TransactionReceipt>, StorageError> {
         self.rt.block_on(async {
             // Query for the receipt
             let row = sqlx::query(
-                "SELECT receipt_data FROM transaction_receipts WHERE transaction_hash = ?"
+                "SELECT receipt_data FROM transaction_receipts WHERE transaction_hash = ?",
             )
             .bind(hash.as_ref())
             .fetch_optional(&self.pool)
             .await
             .with_context(|| format!("Failed to fetch receipt for transaction hash {:?}", hash))?;
-            
+
             // If no receipt found, return None
             if row.is_none() {
                 return Ok(None);
             }
-            
+
             // Extract the receipt data blob
             let receipt_data: Vec<u8> = row.unwrap().get("receipt_data");
-            
+
             // Deserialize the receipt
-            let receipt: TransactionReceipt = bincode::deserialize(&receipt_data)
-                .with_context(|| format!("Failed to deserialize receipt for transaction hash {:?}", hash))?;
-            
+            let receipt: TransactionReceipt =
+                bincode::deserialize(&receipt_data).with_context(|| {
+                    format!(
+                        "Failed to deserialize receipt for transaction hash {:?}",
+                        hash
+                    )
+                })?;
+
             Ok(Some(receipt))
         })
     }
-    
+
     fn get_receipts_for_object(&self, id: &UnitsObjectId) -> Box<dyn UnitsReceiptIterator + '_> {
         // Create a query to get receipts for a specific object
-        let query = "SELECT tr.receipt_data 
+        let query = "SELECT tr.receipt_data
                      FROM transaction_receipts tr
                      JOIN object_transactions ot ON tr.transaction_hash = ot.transaction_hash
                      WHERE ot.object_id = ?
                      ORDER BY tr.slot DESC";
-        
+
         Box::new(SqliteReceiptIterator {
             pool: self.pool.clone(),
             rt: self.rt.clone(),
@@ -1242,14 +1254,14 @@ impl TransactionReceiptStorage for SqliteStorage {
             page_size: 10, // Fetch 10 receipts at a time
         })
     }
-    
+
     fn get_receipts_in_slot(&self, slot: SlotNumber) -> Box<dyn UnitsReceiptIterator + '_> {
         // Create a query to get receipts for a specific slot
-        let query = "SELECT receipt_data 
-                     FROM transaction_receipts 
+        let query = "SELECT receipt_data
+                     FROM transaction_receipts
                      WHERE slot = ?
                      ORDER BY timestamp DESC";
-        
+
         Box::new(SqliteReceiptIterator {
             pool: self.pool.clone(),
             rt: self.rt.clone(),
@@ -1262,6 +1274,7 @@ impl TransactionReceiptStorage for SqliteStorage {
     }
 }
 
+/// TDOO: Implement WAL for SQLite
 impl UnitsWriteAheadLog for SqliteStorage {
     fn init(&self, _path: &Path) -> Result<(), StorageError> {
         // SQLite storage doesn't require a separate WAL file initialization
@@ -1371,7 +1384,7 @@ mod tests {
         proofs: Arc<Mutex<HashMap<UnitsObjectId, Vec<(SlotNumber, UnitsObjectProof)>>>>,
         state_proofs: Arc<Mutex<HashMap<SlotNumber, StateProof>>>,
         current_slot: Arc<Mutex<SlotNumber>>,
-        proof_engine: LatticeProofEngine,
+        proof_engine: MerkleProofEngine,
     }
 
     impl MockSqliteStorage {
@@ -1381,7 +1394,7 @@ mod tests {
                 proofs: Arc::new(Mutex::new(HashMap::new())),
                 state_proofs: Arc::new(Mutex::new(HashMap::new())),
                 current_slot: Arc::new(Mutex::new(1000)), // Start at a base slot number
-                proof_engine: LatticeProofEngine::new(),
+                proof_engine: MerkleProofEngine::new(),
             }
         }
 
@@ -1398,10 +1411,7 @@ mod tests {
             &self.proof_engine
         }
 
-        fn get_proof(
-            &self,
-            id: &UnitsObjectId,
-        ) -> Result<Option<UnitsObjectProof>, StorageError> {
+        fn get_proof(&self, id: &UnitsObjectId) -> Result<Option<UnitsObjectProof>, StorageError> {
             let proofs = self.proofs.lock().unwrap();
 
             if let Some(proof_vec) = proofs.get(id) {
@@ -1416,7 +1426,7 @@ mod tests {
         fn get_proof_history(&self, id: &UnitsObjectId) -> Box<dyn UnitsProofIterator + '_> {
             let proofs = self.proofs.lock().unwrap();
 
-            let result: Vec<(SlotNumber, TokenizedObjectProof)> =
+            let result: Vec<(SlotNumber, UnitsObjectProof)> =
                 if let Some(proof_vec) = proofs.get(id) {
                     proof_vec
                         .iter()
@@ -1572,8 +1582,8 @@ mod tests {
 
         fn record_update(
             &self,
-            _object: &TokenizedObject,
-            _proof: &TokenizedObjectProof,
+            _object: &UnitsObject,
+            _proof: &UnitsObjectProof,
             _transaction_hash: Option<[u8; 32]>,
         ) -> Result<(), StorageError> {
             Ok(())
@@ -1591,6 +1601,11 @@ mod tests {
     }
 
     impl UnitsStorage for MockSqliteStorage {
+        fn lock_manager(&self) -> &dyn PersistentLockManager<Error = StorageError> {
+            // This is just a dummy implementation for tests
+            unimplemented!("Mock lock manager not implemented for tests")
+        }
+
         fn get(&self, id: &UnitsObjectId) -> Result<Option<UnitsObject>, StorageError> {
             let objects = self.objects.lock().unwrap();
             if let Some(obj) = objects.get(id) {
@@ -1701,7 +1716,7 @@ mod tests {
 
         fn scan(&self) -> Box<dyn UnitsStorageIterator + '_> {
             let objects = self.objects.lock().unwrap();
-            let values: Vec<TokenizedObject> = objects.values().cloned().collect();
+            let values: Vec<UnitsObject> = objects.values().cloned().collect();
 
             Box::new(MockStorageIterator {
                 objects: values,
@@ -1731,7 +1746,7 @@ mod tests {
         let id = UnitsObjectId::unique_id_for_tests();
         let holder = UnitsObjectId::unique_id_for_tests();
         let token_manager = UnitsObjectId::unique_id_for_tests();
-        let obj = TokenizedObject::new(
+        let obj = UnitsObject::new_token(
             id,
             holder,
             TokenType::Native,
@@ -1747,9 +1762,9 @@ mod tests {
         let retrieved = storage.get(&id).unwrap().unwrap();
 
         assert_eq!(*retrieved.id(), *obj.id());
-        assert_eq!(*retrieved.holder(), *obj.holder());
-        assert_eq!(retrieved.token_type, obj.token_type);
-        assert_eq!(retrieved.token_manager, obj.token_manager);
+        assert_eq!(*retrieved.owner(), *obj.owner());
+        assert_eq!(retrieved.object_type, obj.object_type);
+        assert_eq!(retrieved.token_manager(), obj.token_manager());
         assert_eq!(retrieved.data(), obj.data());
 
         // Test delete
@@ -1766,7 +1781,7 @@ mod tests {
         let id = UnitsObjectId::unique_id_for_tests();
         let holder = UnitsObjectId::unique_id_for_tests();
         let token_manager = UnitsObjectId::unique_id_for_tests();
-        let obj = TokenizedObject::new(
+        let obj = UnitsObject::new_token(
             id,
             holder,
             TokenType::Native,
@@ -1801,13 +1816,8 @@ mod tests {
 
             let holder = UnitsObjectId::unique_id_for_tests();
             let token_manager = UnitsObjectId::unique_id_for_tests();
-            let obj = TokenizedObject::new(
-                id,
-                holder,
-                TokenType::Native,
-                token_manager,
-                vec![1, 2, 3],
-            );
+            let obj =
+                UnitsObject::new_token(id, holder, TokenType::Native, token_manager, vec![1, 2, 3]);
 
             // Create a unique transaction hash for each object
             let mut transaction_hash = [0u8; 32];
@@ -1837,7 +1847,7 @@ mod tests {
         let id = UnitsObjectId::unique_id_for_tests();
         let holder = UnitsObjectId::unique_id_for_tests();
         let token_manager = UnitsObjectId::unique_id_for_tests();
-        let obj = TokenizedObject::new(
+        let obj = UnitsObject::new_token(
             id,
             holder,
             TokenType::Native,
@@ -1870,7 +1880,7 @@ mod tests {
         let id = UnitsObjectId::unique_id_for_tests();
         let holder = UnitsObjectId::unique_id_for_tests();
         let token_manager = UnitsObjectId::unique_id_for_tests();
-        let obj = TokenizedObject::new(
+        let obj = UnitsObject::new_token(
             id,
             holder,
             TokenType::Native,
@@ -1884,11 +1894,11 @@ mod tests {
         println!("Initial proof slot: {}", proof1.slot);
 
         // Modify and store the object again to create a chain of proofs
-        let obj_updated = TokenizedObject::new(
+        let obj_updated = UnitsObject::new_token(
             *obj.id(),
-            *obj.holder(),
-            obj.token_type,
-            obj.token_manager,
+            *obj.owner(),
+            TokenType::Native,
+            *obj.token_manager().unwrap(),
             vec![5, 6, 7, 8],
         );
         let proof2 = storage.set(&obj_updated, None).unwrap();
@@ -1896,11 +1906,11 @@ mod tests {
         println!("Second proof prev_hash: {:?}", proof2.prev_proof_hash);
 
         // Modify and store once more
-        let obj_updated2 = TokenizedObject::new(
+        let obj_updated2 = UnitsObject::new_token(
             *obj_updated.id(),
-            *obj_updated.holder(),
-            obj_updated.token_type,
-            obj_updated.token_manager,
+            *obj_updated.owner(),
+            TokenType::Native,
+            *obj_updated.token_manager().unwrap(),
             vec![9, 10, 11, 12],
         );
         let proof3 = storage.set(&obj_updated2, None).unwrap();
