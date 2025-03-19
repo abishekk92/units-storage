@@ -12,7 +12,10 @@ The project is organized as a Cargo workspace with the following crates:
 
 - **units-core**: Core data structures and fundamental types
   - UnitsObjectId
-  - TokenizedObject
+  - UnitsObject (consolidated object model)
+  - Transaction types
+  - Locking primitives
+  - Scheduler
   - Basic error types
 
 - **units-proofs**: Cryptographic proof systems
@@ -23,24 +26,26 @@ The project is organized as a Cargo workspace with the following crates:
 - **units-storage-impl**: Storage backends
   - Storage Traits
   - SQLite Implementation
+  - Lock Manager
   - Write-Ahead Log
 
 - **units-runtime**: Runtime and verification
   - Object Runtime
+  - Host Environment
   - Proof Verification
-  - Transaction Processing
-  - Transaction Commitment Levels
+  - Runtime Backend
 
 - **units**: Convenience wrapper crate that re-exports all components
 
 ## Features
 
 - **Storage Trait**: A unified interface for different storage backends
-- **TokenizedObject**: Core data structure with cryptographic features
+- **UnitsObject**: Consolidated object model with cryptographic features
 - **Verifiable History**: Cryptographic proof chains that link object states over time
 - **Write-Ahead Log**: Durable logging of all state changes for reliability
 - **Slot-Based Versioning**: Historical tracking of objects and their proofs
-- **Transaction Commitment Levels**: Support for processing, committed, and failed transaction states
+- **Integrated Transaction System**: Unified transaction handling with locking primitives
+- **Lock Manager**: Coordinated object access control
 - **SQLite Backend**: Reliable and efficient storage implementation
 
 ## Architecture
@@ -51,7 +56,7 @@ For detailed architecture documentation, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 The proof system is designed to provide cryptographic guarantees about object states and their history:
 
-1. **Object Proofs**: Each TokenizedObject has a proof that:
+1. **Object Proofs**: Each UnitsObject has a proof that:
    - Commits to the current state of the object
    - Links to the previous state through the `prev_proof_hash`
    - Is tracked with a `slot` number to organize time
@@ -112,7 +117,7 @@ units-storage-impl = { version = "0.1.0", features = ["sqlite"] }
 ### Basic Usage
 
 ```rust
-use units::{UnitsObjectId, TokenizedObject, TokenType};
+use units::{UnitsObjectId, UnitsObject};
 use units::SqliteStorage;  // With sqlite feature enabled
 use units::UnitsStorage;
 use std::path::Path;
@@ -123,14 +128,11 @@ let storage = SqliteStorage::new(Path::new("./my_database.db")).unwrap();
 // Create an object
 let id = UnitsObjectId::random();
 let holder = UnitsObjectId::random();
-let token_manager = UnitsObjectId::random();
-let obj = TokenizedObject {
+let obj = UnitsObject::new(
     id,
     holder,
-    token_type: TokenType::Native,
-    token_manager,
-    data: vec![1, 2, 3, 4],
-};
+    vec![1, 2, 3, 4], // data
+);
 
 // Store the object and get its proof
 let proof = storage.set(&obj).unwrap();
@@ -146,11 +148,11 @@ let deletion_proof = storage.delete(&id).unwrap();
 println!("Deletion proof: {:?}", deletion_proof);
 ```
 
-### Transaction Processing with Commitment Levels
+### Transaction Processing
 
 ```rust
-use units::{Transaction, Instruction, CommitmentLevel, AccessIntent};
-use units::runtime::Runtime;
+use units_core::{Transaction, Instruction, AccessIntent};
+use units_runtime::Runtime;
 
 // Create instructions for a transaction
 let instruction = Instruction {
@@ -158,28 +160,23 @@ let instruction = Instruction {
     object_intents: vec![(object_id, AccessIntent::Write)]
 };
 
-// Create a transaction (starts with Processing commitment level)
-let mut transaction = Transaction::new(vec![instruction], transaction_hash);
+// Create a transaction
+let transaction = Transaction::new(vec![instruction]);
 
 // Execute the transaction
 let result = runtime.execute_transaction(&transaction).unwrap();
 
 if result.success {
-    // Mark the transaction as committed when ready
-    transaction.commit();
-
-    // Or if there's an issue, mark it as failed
-    // transaction.fail();
-
-    // Check if a transaction can be rolled back
-    if transaction.can_rollback() {
-        // Roll back operations if needed
-    }
+    // Transaction was executed successfully
+    println!("Transaction executed successfully");
+} else {
+    // Handle transaction failure
+    println!("Transaction failed: {:?}", result.error);
 }
 
-// Transaction receipts also capture commitment levels
+// Get transaction receipt
 let receipt = runtime.get_transaction_receipt(&transaction.hash).unwrap();
-println!("Transaction commitment level: {:?}", receipt.commitment_level);
+println!("Transaction status: {:?}", receipt.status);
 ```
 
 ### Scanning Objects
